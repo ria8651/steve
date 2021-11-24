@@ -1,3 +1,8 @@
+mod renderer;
+
+use std::sync::Arc;
+
 fn main() {
-    println!("Hello, world!");
+    let renderer = renderer::RenderEngine::init();
+    renderer::RenderEngine::game_loop(renderer);
 }

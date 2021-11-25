@@ -3,11 +3,12 @@ use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{Device, DeviceExtensions, Features, Queue};
+use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::{ImageUsage, SwapchainImage};
+use vulkano::image::{ImageUsage, SwapchainImage, attachment::AttachmentImage};
 use vulkano::instance::Instance;
 use vulkano::pipeline::viewport::Viewport;
-use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::{GraphicsPipeline, vertex::BuffersDefinition};
 use vulkano::render_pass::{Framebuffer, FramebufferAbstract, RenderPass, Subpass};
 use vulkano::swapchain;
 use vulkano::swapchain::{AcquireError, Surface, Swapchain, SwapchainCreationError};
@@ -34,9 +35,11 @@ pub struct RenderEngine {
 
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     recreate_swapchain: bool,
-    viewport: Viewport,
 
     vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    normal_buffer: Arc<CpuAccessibleBuffer<[Normal]>>,
+    vs: vs::Shader,
+    fs: fs::Shader,
 }
 
 impl RenderEngine {
@@ -109,38 +112,28 @@ impl RenderEngine {
                 .unwrap()
         };
 
-        let vs = vs::Shader::load(device.clone()).unwrap();
-        let fs = fs::Shader::load(device.clone()).unwrap();
-
         let render_pass = Arc::new(
-            vulkano::single_pass_renderpass!(
-                device.clone(),
+            vulkano::single_pass_renderpass!(device.clone(),
                 attachments: {
                     color: {
                         load: Clear,
                         store: Store,
                         format: swapchain.format(),
                         samples: 1,
+                    },
+                    depth: {
+                        load: Clear,
+                        store: DontCare,
+                        format: Format::D16_UNORM,
+                        samples: 1,
                     }
                 },
                 pass: {
                     color: [color],
-                    depth_stencil: {}
+                    depth_stencil: {depth}
                 }
             )
             .unwrap(),
-        );
-
-        let pipeline = Arc::new(
-            GraphicsPipeline::start()
-                .vertex_input_single_buffer::<Vertex>()
-                .vertex_shader(vs.main_entry_point(), ())
-                .triangle_list()
-                .viewports_dynamic_scissors_irrelevant(1)
-                .fragment_shader(fs.main_entry_point(), ())
-                .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                .build(device.clone())
-                .unwrap(),
         );
 
         let vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>> = CpuAccessibleBuffer::from_iter(
@@ -157,20 +150,55 @@ impl RenderEngine {
                 Vertex {
                     position: [1.0, 1.0, 0.0],
                 },
+                Vertex {
+                    position: [1.0, 1.0, 0.5],
+                },
+                Vertex {
+                    position: [-1.0, -1.0, 0.0],
+                },
+                Vertex {
+                    position: [1.0, -1.0, 1.0],
+                },
             ]
             .iter()
             .cloned(),
         )
         .unwrap();
 
-        let mut viewport = Viewport {
-            origin: [0.0, 0.0],
-            dimensions: [0.0, 0.0],
-            depth_range: 0.0..1.0,
-        };
+        let normal_buffer: Arc<CpuAccessibleBuffer<[Normal]>> = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            [
+                Normal {
+                    normal: [1.0, 0.0, 0.0],
+                },
+                Normal {
+                    normal: [0.0, 1.0, 0.0],
+                },
+                Normal {
+                    normal: [0.0, 0.0, 1.0],
+                },
+                Normal {
+                    normal: [0.0, 0.0, 1.0],
+                },
+                Normal {
+                    normal: [1.0, 0.0, 0.0],
+                },
+                Normal {
+                    normal: [0.0, 1.0, 0.0],
+                },
+            ]
+            .iter()
+            .cloned(),
+        )
+        .unwrap();
 
-        let framebuffers =
-            window_size_dependent_setup(&images, render_pass.clone(), &mut viewport);
+        let vs = vs::Shader::load(device.clone()).unwrap();
+        let fs = fs::Shader::load(device.clone()).unwrap();
+
+        let (pipeline, framebuffers) =
+            window_size_dependent_setup(device.clone(), &vs, &fs, &images, render_pass.clone());
 
         let previous_frame_end = Some(sync::now(device.clone()).boxed());
 
@@ -186,12 +214,14 @@ impl RenderEngine {
 
             render_pass: render_pass,
             pipeline: pipeline,
-            viewport: viewport,
 
             previous_frame_end: previous_frame_end,
             recreate_swapchain: false,
 
             vertex_buffer: vertex_buffer,
+            normal_buffer: normal_buffer,
+            vs: vs,
+            fs: fs,
         }
     }
 
@@ -224,9 +254,7 @@ impl RenderEngine {
                     },
                     _ => (),
                 },
-                Event::RedrawEventsCleared => {
-                    
-                }
+                Event::RedrawEventsCleared => {}
                 _ => (),
             }
         });
@@ -245,8 +273,15 @@ impl RenderEngine {
                 };
 
             self.swapchain = new_swapchain;
-            self.framebuffers =
-                window_size_dependent_setup(&new_images, self.render_pass.clone(), &mut self.viewport);
+            let (new_pipeline, new_framebuffers) = window_size_dependent_setup(
+                self.device.clone(),
+                &self.vs,
+                &self.fs,
+                &new_images,
+                self.render_pass.clone(),
+            );
+            self.pipeline = new_pipeline;
+            self.framebuffers = new_framebuffers;
             self.recreate_swapchain = false;
         }
 
@@ -264,7 +299,7 @@ impl RenderEngine {
             self.recreate_swapchain = true;
         }
 
-        let clear_values = vec![[0.3, 0.7, 0.2, 1.0].into()];
+        let clear_values = vec![[0.3, 0.7, 0.2, 1.0].into(), 1.0.into()];
 
         let mut builder = AutoCommandBufferBuilder::primary(
             self.device.clone(),
@@ -280,9 +315,8 @@ impl RenderEngine {
                 clear_values,
             )
             .unwrap()
-            .set_viewport(0, [self.viewport.clone()])
             .bind_pipeline_graphics(self.pipeline.clone())
-            .bind_vertex_buffers(0, self.vertex_buffer.clone())
+            .bind_vertex_buffers(0, (self.vertex_buffer.clone(), self.normal_buffer.clone()))
             .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
             .unwrap()
             .end_render_pass()
@@ -290,7 +324,8 @@ impl RenderEngine {
 
         let command_buffer = builder.build().unwrap();
 
-        let future = self.previous_frame_end
+        let future = self
+            .previous_frame_end
             .take()
             .unwrap()
             .join(acquire_future)
@@ -315,15 +350,22 @@ impl RenderEngine {
     }
 }
 
+/// This method is called once during initialization, then again whenever the window is resized
 fn window_size_dependent_setup(
+    device: Arc<Device>,
+    vs: &vs::Shader,
+    fs: &fs::Shader,
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<RenderPass>,
-    viewport: &mut Viewport,
-) -> Vec<Arc<dyn FramebufferAbstract>> {
+) -> (Arc<GraphicsPipeline>, Vec<Arc<dyn FramebufferAbstract>>) {
     let dimensions = images[0].dimensions();
-    viewport.dimensions = [dimensions[0] as f32, dimensions[1] as f32];
 
-    images
+    let depth_buffer = ImageView::new(
+        AttachmentImage::transient(device.clone(), dimensions, Format::D16_UNORM).unwrap(),
+    )
+    .unwrap();
+
+    let framebuffers = images
         .iter()
         .map(|image| {
             let view = ImageView::new(image.clone()).unwrap();
@@ -331,18 +373,56 @@ fn window_size_dependent_setup(
                 Framebuffer::start(render_pass.clone())
                     .add(view)
                     .unwrap()
+                    .add(depth_buffer.clone())
+                    .unwrap()
                     .build()
                     .unwrap(),
             ) as Arc<dyn FramebufferAbstract>
         })
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>();
+
+    // In the triangle example we use a dynamic viewport, as its a simple example.
+    // However in the teapot example, we recreate the pipelines with a hardcoded viewport instead.
+    // This allows the driver to optimize things, at the cost of slower window resizes.
+    // https://computergraphics.stackexchange.com/questions/5742/vulkan-best-way-of-updating-pipeline-viewport
+    let pipeline = Arc::new(
+        GraphicsPipeline::start()
+            .vertex_input(
+                BuffersDefinition::new()
+                    .vertex::<Vertex>()
+                    .vertex::<Normal>(),
+            )
+            .vertex_shader(vs.main_entry_point(), ())
+            .triangle_list()
+            .viewports_dynamic_scissors_irrelevant(1)
+            .viewports([Viewport {
+                origin: [0.0, 0.0],
+                dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+                depth_range: 0.0..1.0,
+            }])
+            .fragment_shader(fs.main_entry_point(), ())
+            .depth_stencil_simple_depth()
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .build(device.clone())
+            .unwrap(),
+    );
+
+    (pipeline, framebuffers)
 }
 
 #[derive(Default, Debug, Clone)]
 struct Vertex {
     position: [f32; 3],
 }
+
 vulkano::impl_vertex!(Vertex, position);
+
+#[derive(Default, Copy, Clone)]
+pub struct Normal {
+    normal: [f32; 3],
+}
+
+vulkano::impl_vertex!(Normal, normal);
 
 mod vs {
     vulkano_shaders::shader! {
@@ -351,9 +431,13 @@ mod vs {
 				#version 450
 
 				layout(location = 0) in vec3 position;
+				layout(location = 1) in vec3 normal;
 
+				layout(location = 0) out vec3 v_normal;
+                
 				void main() {
 					gl_Position = vec4(position, 1.0);
+                    v_normal = normal;
 				}
 			"
     }
@@ -365,10 +449,11 @@ mod fs {
         src: "
 				#version 450
 
+				layout(location = 0) in vec3 v_normal;
 				layout(location = 0) out vec4 f_color;
 
 				void main() {
-					f_color = vec4(gl_FragCoord);
+					f_color = vec4(v_normal, 0.0);
 				}
 			"
     }

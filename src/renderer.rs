@@ -20,6 +20,10 @@ use winit::event::{Event, KeyboardInput, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
+mod mesh;
+
+use mesh::{Normal, Vertex};
+
 pub struct RenderEngine {
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -410,18 +414,7 @@ fn window_size_dependent_setup(
     (pipeline, framebuffers)
 }
 
-#[derive(Default, Debug, Clone)]
-struct Vertex {
-    position: [f32; 3],
-}
-
 vulkano::impl_vertex!(Vertex, position);
-
-#[derive(Default, Copy, Clone)]
-pub struct Normal {
-    normal: [f32; 3],
-}
-
 vulkano::impl_vertex!(Normal, normal);
 
 mod vs {

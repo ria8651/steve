@@ -1,41 +1,26 @@
-mod ecs;
-
-use ecs::Ecs;
+use legion::*;
 
 fn main() {
-    let mut ecs = Ecs::new();
+    let mut world = World::default();
 
-    let entity_id = ecs.new_entity();
-    ecs.add_component_to_entity(entity_id, Health(100));
-    ecs.add_component_to_entity(entity_id, Name("Bob"));
+    world.push((Health(100), Name("Bob")));
+    world.push((Health(80), Name("Larry")));
+    world.push((Name("Rock"),));
 
-    let entity_id = ecs.new_entity();
-    ecs.add_component_to_entity(entity_id, Health(80));
-    ecs.add_component_to_entity(entity_id, Name("John"));
+    // construct a query from a "view tuple"
+    let mut query = <(&Health, &Name)>::query();
 
-    let entity_id = ecs.new_entity();
-    ecs.add_component_to_entity(entity_id, Name("Stone"));
-    {
-        let mut vec = ecs.borrow_component_vec::<Health>().unwrap();
-        for health in vec.iter_mut() {
-            if let Some(health) = health {
-                println!("{}", health.0);
-                health.0 = 10;
-            } else {
-                println!("None");
-            }
-        }
+    // this time we have &Velocity and &mut Position
+    for (health, name) in query.iter_mut(&mut world) {
+        println!("{} has health {}", name.0, health.0);
     }
 
-    {
-        let mut vec = ecs.borrow_component_vec::<Health>().unwrap();
-        for health in vec.iter_mut() {
-            if let Some(health) = health {
-                println!("{}", health.0);
-            } else {
-                println!("None");
-            }
-        }
+    // construct a query from a "view tuple"
+    let mut query = <(&Name,)>::query();
+
+    // this time we have &Velocity and &mut Position
+    for (name,) in query.iter_mut(&mut world) {
+        println!("{}", name.0);
     }
 
     // let renderer = renderer::RenderEngine::init();

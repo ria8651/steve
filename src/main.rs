@@ -3,10 +3,14 @@
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
+    reflect::TypeUuid,
     render::{
         camera::PerspectiveProjection,
-        mesh::Indices,
-        pipeline::PrimitiveTopology::TriangleList,
+        mesh::{Indices, VertexAttributeValues},
+        pipeline::{PipelineDescriptor, PrimitiveTopology::TriangleList, RenderPipeline},
+        render_graph::{base, AssetRenderResourcesNode, RenderGraph},
+        renderer::RenderResources,
+        shader::{ShaderStage, ShaderStages},
     },
     tasks::{AsyncComputeTaskPool, Task},
 };
@@ -26,9 +30,10 @@ fn main() {
         .add_plugin(NoCameraPlayerPlugin)
         .add_plugin(LogDiagnosticsPlugin::default())
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        .add_asset::<ChunkMaterial>()
         .insert_resource(MovementSettings {
             sensitivity: 0.00012, // default: 0.00012
-            speed: 50.0,         // default: 12.0
+            speed: 50.0,          // default: 12.0
         })
         .add_startup_system(setup.system())
         .add_startup_system(spawn_chunk_tasks.system())
@@ -36,7 +41,107 @@ fn main() {
         .run();
 }
 
-struct ChunkMaterialHandle(Handle<StandardMaterial>);
+#[derive(RenderResources, Default, TypeUuid)]
+#[uuid = "0320b9b8-b3a3-4baa-8bfa-c94008177b17"]
+struct ChunkMaterial;
+struct ChunkMaterialHandle(Handle<ChunkMaterial>);
+struct ChunkPipelineHandle(Handle<PipelineDescriptor>);
+
+const VERTEX_SHADER: &str = include_str!("chunk.vert");
+const FRAGMENT_SHADER: &str = include_str!("chunk.frag");
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut pbr_materials: ResMut<Assets<StandardMaterial>>,
+    mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+    mut pipelines: ResMut<Assets<PipelineDescriptor>>,
+    mut shaders: ResMut<Assets<Shader>>,
+    mut render_graph: ResMut<RenderGraph>,
+) {
+    // Create a new shader pipeline
+    let pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
+        vertex: shaders.add(Shader::from_glsl(ShaderStage::Vertex, VERTEX_SHADER)),
+        fragment: Some(shaders.add(Shader::from_glsl(ShaderStage::Fragment, FRAGMENT_SHADER))),
+    }));
+    commands.insert_resource(ChunkPipelineHandle(pipeline_handle));
+
+    // Add an AssetRenderResourcesNode to our Render Graph. This will bind
+    // MyMaterialWithVertexColorSupport resources to our shader
+    render_graph.add_system_node(
+        "chunk_material",
+        AssetRenderResourcesNode::<ChunkMaterial>::new(true),
+    );
+
+    // Add a Render Graph edge connecting our new "my_material" node to the main pass node. This
+    // ensures "my_material" runs before the main pass
+    render_graph
+        .add_node_edge("chunk_material", base::node::MAIN_PASS)
+        .unwrap();
+
+    // Create a new material
+    let chunk_material_handle = chunk_materials.add(ChunkMaterial {});
+    commands.insert_resource(ChunkMaterialHandle(chunk_material_handle));
+
+    // camera
+    commands
+        .spawn_bundle(PerspectiveCameraBundle {
+            transform: Transform::from_xyz(-2.0, 300.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+            perspective_projection: PerspectiveProjection {
+                fov: 1.48353,
+                near: 0.05,
+                far: 10000.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(FlyCam);
+    // origin
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+        material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        ..Default::default()
+    });
+    // light
+    commands.spawn_bundle(LightBundle {
+        transform: Transform::from_xyz(3.0, 8.0, 5.0),
+        ..Default::default()
+    });
+    // sun
+    commands.spawn_bundle(LightBundle {
+        transform: Transform::from_xyz(5000.0, 10000.0, 2000.0),
+        light: Light {
+            intensity: 1000000000.0,
+            range: 1000000.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    // let tmp_mesh = TmpMesh::new();
+    // tmp_mesh.add_face(Face::Top, Vec3::new(0.0, 0.0, 0.0), );
+
+    // let solid = true;
+    // for face in faces {
+    //     if solid == true {
+    //         let offset = Vec3::new(x as f32, y as f32, z as f32);
+            
+    //     }
+    // }
+
+    // commands
+    //     .spawn_bundle(MeshBundle {
+    //         mesh: meshes.add(chunk_task_data.mesh),
+    //         transform: Transform::from_xyz(
+    //             chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
+    //             0.0,
+    //             chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
+    //         ),
+    //         ..Default::default()
+    //     })
+    //     .insert(material_handle.0.clone());
+}
 
 fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPool>) {
     let view_distance: i32 = 32;
@@ -73,6 +178,7 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
             mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
             mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
             mesh.set_attribute(Mesh::ATTRIBUTE_UV_0, tmp_mesh.uvs);
+            mesh.set_attribute("AO", VertexAttributeValues::from(tmp_mesh.ao));
             mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
 
             ChunkTaskData {
@@ -91,70 +197,42 @@ fn handle_chunk_tasks(
     mut completed_chunks: Query<(Entity, &mut Task<ChunkTaskData>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     material_handle: Res<ChunkMaterialHandle>,
+    pipeline_handle: Res<ChunkPipelineHandle>,
 ) {
     for (entity, mut task) in completed_chunks.iter_mut() {
         if let Some(chunk_task_data) = future::block_on(future::poll_once(&mut *task)) {
             // Add our new PbrBundle of components to our tagged entity
-            commands.entity(entity).insert_bundle(PbrBundle {
-                mesh: meshes.add(chunk_task_data.mesh),
-                material: material_handle.0.clone(),
-                transform: Transform::from_xyz(
-                    chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
-                    0.0,
-                    chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
-                ),
-                ..Default::default()
-            });
+            // commands
+            //     .entity(entity)
+            //     .insert_bundle(MeshBundle {
+            //         mesh: meshes.add(chunk_task_data.mesh),
+            //         transform: Transform::from_xyz(
+            //             chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
+            //             0.0,
+            //             chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
+            //         ),
+            //         ..Default::default()
+            //     })
+            //     .insert(material_handle.0.clone());
+            commands
+                .spawn_bundle(MeshBundle {
+                    mesh: meshes.add(chunk_task_data.mesh), // use our cube with vertex colors
+                    render_pipelines: RenderPipelines::from_pipelines(vec![RenderPipeline::new(
+                        pipeline_handle.0.clone(),
+                    )]),
+                    transform: Transform::from_xyz(
+                        chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
+                        0.0,
+                        chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
+                    ),
+                    ..Default::default()
+                })
+                .insert(material_handle.0.clone());
 
             // Task is complete, so remove task component from entity
             commands.entity(entity).remove::<Task<ChunkTaskData>>();
         }
     }
-}
-
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let material_handle = materials.add(Color::rgb(0.8, 0.7, 0.6).into());
-    commands.insert_resource(ChunkMaterialHandle(material_handle));
-
-    // camera
-    commands
-        .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 300.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-            perspective_projection: PerspectiveProjection {
-                fov: 1.48353,
-                near: 0.05,
-                far: 10000.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .insert(FlyCam);
-    // origin
-    commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
-        ..Default::default()
-    });
-    // light
-    commands.spawn_bundle(LightBundle {
-        transform: Transform::from_xyz(3.0, 8.0, 5.0),
-        ..Default::default()
-    });
-    // sun
-    commands.spawn_bundle(LightBundle {
-        transform: Transform::from_xyz(5000.0, 10000.0, 2000.0),
-        light: Light {
-            intensity: 1000000000.0,
-            range: 1000000.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    });
 }
 
 #[derive(Clone, Copy)]
@@ -265,6 +343,7 @@ struct TmpMesh {
     vertices: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
+    ao: Vec<f32>,
     indices: Vec<u32>,
 }
 
@@ -274,11 +353,16 @@ impl TmpMesh {
             vertices: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
+            ao: Vec::new(),
             indices: Vec::new(),
         }
     }
 
     fn add_face(&mut self, face: Face, o: Vec3) {
+        self.uvs
+            .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
+        self.ao.extend([0.6, 1.0, 1.0, 0.6]);
+
         let a = self.vertices.len() as u32;
         match face {
             Face::Front => {
@@ -294,8 +378,6 @@ impl TmpMesh {
                     [0.0, 0.0, 1.0],
                     [0.0, 0.0, 1.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Back => {
@@ -311,8 +393,6 @@ impl TmpMesh {
                     [0.0, 0.0, -1.0],
                     [0.0, 0.0, -1.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
             Face::Right => {
@@ -328,8 +408,6 @@ impl TmpMesh {
                     [1.0, 0.0, 0.0],
                     [1.0, 0.0, 0.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
             Face::Left => {
@@ -345,8 +423,6 @@ impl TmpMesh {
                     [-1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Top => {
@@ -362,8 +438,6 @@ impl TmpMesh {
                     [0.0, 1.0, 0.0],
                     [0.0, 1.0, 0.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Bottom => {
@@ -379,8 +453,6 @@ impl TmpMesh {
                     [0.0, -1.0, 0.0],
                     [0.0, -1.0, 0.0],
                 ]);
-                self.uvs
-                    .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
                 self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
         }

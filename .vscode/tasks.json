@@ -2,13 +2,16 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "cargo",
-			"subcommand": "run",
+			"label": "Rust: cargo run - steve",
+			"type": "shell",
+			"command": "cargo run --release",
 			"problemMatcher": [
 				"$rustc"
 			],
-			"group": "build",
-			"label": "Rust: cargo run - steve"
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
 		}
 	]
 }

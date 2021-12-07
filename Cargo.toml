@@ -6,9 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-vulkano = "0.26.0"
-vulkano-shaders = "0.26.0"
-vulkano-win = "0.26.0"
-winit = "0.25.0"
-cgmath = "0.18.0"
-legion = "0.4.0"
+bevy = { version = "0.5", features = ["dynamic", ] }
+bevy_flycam = "*"
+rand = "0.8.4"
+noise = "0.7.0"
+futures-lite = "1.12.0"

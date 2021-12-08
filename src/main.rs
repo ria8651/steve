@@ -1,7 +1,7 @@
 #![allow(non_upper_case_globals)]
 
 use bevy::{
-    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
     reflect::TypeUuid,
     render::{
@@ -17,11 +17,14 @@ use bevy::{
 
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use futures_lite::future;
-use noise::{Billow, NoiseFn, Perlin};
+use noise::{NoiseFn, Perlin};
 
-const CHUNK_SIZE_X: usize = 16;
+const CHUNK_SIZE_X: usize = 32;
 const CHUNK_SIZE_Y: usize = 384;
-const CHUNK_SIZE_Z: usize = 16;
+const CHUNK_SIZE_Z: usize = 32;
+
+const VIEW_DISTANCE: usize = 16;
+const AO: bool = true;
 
 fn main() {
     App::build()
@@ -37,6 +40,7 @@ fn main() {
         })
         .add_startup_system(setup.system())
         .add_startup_system(spawn_chunk_tasks.system())
+        .add_system(fps_system.system())
         .add_system(handle_chunk_tasks.system())
         .run();
 }
@@ -58,6 +62,7 @@ fn setup(
     mut pipelines: ResMut<Assets<PipelineDescriptor>>,
     mut shaders: ResMut<Assets<Shader>>,
     mut render_graph: ResMut<RenderGraph>,
+    asset_server: Res<AssetServer>,
 ) {
     // Create a new shader pipeline
     let pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
@@ -86,7 +91,7 @@ fn setup(
     // camera
     commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 230.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-2.0, 210.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
             perspective_projection: PerspectiveProjection {
                 fov: 1.48353,
                 near: 0.05,
@@ -118,10 +123,47 @@ fn setup(
         },
         ..Default::default()
     });
+    // ui
+    commands.spawn_bundle(UiCameraBundle::default());
+    // fps
+    commands.spawn_bundle(TextBundle {
+        text: Text {
+            sections: vec![TextSection {
+                value: "0.00".to_string(),
+                style: TextStyle {
+                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                    font_size: 40.0,
+                    color: Color::rgb(0.0, 0.0, 0.0),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        },
+        style: Style {
+            position_type: PositionType::Absolute,
+            position: Rect {
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+}
+
+fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
+    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+        if let Some(average) = fps.average() {
+            for mut text in query.iter_mut() {
+                text.sections[0].value = format!("{:.1}", average);
+            }
+        }
+    }
 }
 
 fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPool>) {
-    let view_distance: i32 = 32;
+    let view_distance: i32 = VIEW_DISTANCE as i32;
     let mut chunks_to_load: Vec<IVec2> =
         Vec::with_capacity((view_distance * view_distance) as usize);
 
@@ -236,9 +278,12 @@ impl Chunk {
     }
 
     fn try_index(&self, pos: IVec3) -> Option<u16> {
-        if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32
-            || pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32
-            || pos.z < 0 || pos.z >= CHUNK_SIZE_Z as i32
+        if pos.x < 0
+            || pos.x >= CHUNK_SIZE_X as i32
+            || pos.y < 0
+            || pos.y >= CHUNK_SIZE_Y as i32
+            || pos.z < 0
+            || pos.z >= CHUNK_SIZE_Z as i32
         {
             return None;
         }
@@ -275,12 +320,12 @@ impl Chunk {
             return e1 as u8 + e2 as u8 + c as u8;
         }
 
-        fn get_aooo(e1: bool, e2: bool, c: bool) -> f32 {
-            match get_ao(e1, e2, c) {
+        fn get_aooo(v: u8) -> f32 {
+            match v {
                 0 => 1.0,
                 1 => 0.4,
                 2 => 0.3,
-                3 => 0.2,
+                3 => 0.0,
                 _ => -5.0,
             }
         }
@@ -356,22 +401,33 @@ impl Chunk {
                             let dir_value = self.try_index(dir_pos).unwrap_or(1);
 
                             if dir_value == 0 {
-                                let mut ao = [1.0, 1.0, 1.0, 1.0];
-                                for i in 0..4 {
-                                    let offset = corner(face, i);
-
-                                    let mask = mask(face);
-                                    let e1 = self.try_index(offset * mask[0] + pos).unwrap_or(0) != 0;
-                                    let e2 = self.try_index(offset * mask[1] + pos).unwrap_or(0) != 0;
-                                    let c = self.try_index(offset + pos).unwrap_or(0) != 0;
-    
-                                    ao[i as usize] = get_aooo(e1, e2, c);
+                                let mut ao = [1, 1, 1, 1];
+                                if AO {
+                                    for i in 0..4 {
+                                        let offset = corner(face, i);
+                                        let mask = mask(face);
+                                        let e1 =
+                                            self.try_index(offset * mask[0] + pos).unwrap_or(0)
+                                                != 0;
+                                        let e2 =
+                                            self.try_index(offset * mask[1] + pos).unwrap_or(0)
+                                                != 0;
+                                        let c = self.try_index(offset + pos).unwrap_or(0) != 0;
+                                        ao[i as usize] = get_ao(e1, e2, c);
+                                    }
                                 }
+
+                                let flip = ao[0] + ao[2] > ao[1] + ao[3];
                                 tmp_mesh.add_face(
                                     face,
                                     Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32),
-                                    ao,
-                                    ao[0] + ao[2] < ao[1] + ao[3],
+                                    [
+                                        get_aooo(ao[0]),
+                                        get_aooo(ao[1]),
+                                        get_aooo(ao[2]),
+                                        get_aooo(ao[3]),
+                                    ],
+                                    flip,
                                 );
                             }
                         }

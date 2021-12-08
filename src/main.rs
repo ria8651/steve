@@ -185,10 +185,10 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
     for chunk_id in chunks_to_load {
         let task = thread_pool.spawn(async move {
             let mut chunk = Chunk::new();
-            chunk.generate(Vec3::new(
-                (chunk_id.x * CHUNK_SIZE_X as i32) as f32,
-                0.0,
-                (chunk_id.y * CHUNK_SIZE_Z as i32) as f32,
+            chunk.generate(IVec3::new(
+                chunk_id.x * CHUNK_SIZE_X as i32,
+                0,
+                chunk_id.y * CHUNK_SIZE_Z as i32,
             ));
 
             let tmp_mesh = chunk.generate_mesh();
@@ -268,44 +268,98 @@ struct ChunkTaskData {
 
 struct Chunk {
     values: Box<[[[u16; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>,
+    x_neighbor: Box<[Option<[[u16; CHUNK_SIZE_Y]; CHUNK_SIZE_Z + 2]>; 2]>,
+    z_neighbor: Box<[Option<[[u16; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>; 2]>,
 }
 
 impl Chunk {
     fn new() -> Self {
         Chunk {
             values: Box::new([[[0; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]),
+            x_neighbor: Box::new([None; 2]),
+            z_neighbor: Box::new([None; 2]),
         }
     }
 
     fn try_index(&self, pos: IVec3) -> Option<u16> {
-        if pos.x < 0
-            || pos.x >= CHUNK_SIZE_X as i32
-            || pos.y < 0
-            || pos.y >= CHUNK_SIZE_Y as i32
-            || pos.z < 0
-            || pos.z >= CHUNK_SIZE_Z as i32
-        {
+        if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32 {
+            let layer = (pos.x + 1) as usize / CHUNK_SIZE_X;
+            if let Some(slice) = self.x_neighbor[layer] {
+                return Some(slice[(pos.z + 1) as usize][pos.y as usize]);
+            } else {
+                return None;
+            }
+        }
+
+        if pos.z < 0 || pos.z >= CHUNK_SIZE_Z as i32 {
+            let layer = (pos.z + 1) as usize / CHUNK_SIZE_Z;
+            if let Some(slice) = self.z_neighbor[layer] {
+                return Some(slice[pos.x as usize][pos.y as usize]);
+            } else {
+                return None;
+            }
+        }
+
+        if pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32 {
             return None;
         }
 
         Some(self.values[pos.x as usize][pos.y as usize][pos.z as usize])
     }
 
-    fn generate(&mut self, pos: Vec3) {
+    fn generate(&mut self, pos: IVec3) {
         let perlin = Perlin::default();
 
+        fn evaluate(perlin: Perlin, x: f64, y: f64, z: f64) -> bool {
+            let p = perlin.get([x / 20.0, y / 20.0, z / 20.0]);
+            p + y * 0.1 - 20.0 < 0.0
+        }
+
+        // values
         for x in 0..CHUNK_SIZE_X {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
-                    let value = (perlin.get([
-                        (x as f64 + pos.x as f64) / 20.0,
-                        (y as f64 + pos.y as f64) / 20.0,
-                        // 0.0,
-                        (z as f64 + pos.z as f64) / 20.0,
-                    ]) + (y as f64) * 0.1
-                        - 20.0
-                        < 0.0) as u16;
+                    let value = evaluate(
+                        perlin,
+                        (x as i32 + pos.x) as f64,
+                        (y as i32 + pos.y) as f64,
+                        (z as i32 + pos.z) as f64,
+                    ) as u16;
                     self.values[x][y][z] = value;
+                }
+            }
+        }
+
+        // x_neighbor
+        for l in 0..2 {
+            let layer = self.x_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_Z + 2]);
+            for y in 0..CHUNK_SIZE_Y {
+                for z in 0..CHUNK_SIZE_Z {
+                    let x = l as i32 * (CHUNK_SIZE_X as i32 + 1) - 1;
+                    let value = evaluate(
+                        perlin,
+                        (x as i32 + pos.x) as f64,
+                        (y as i32 + pos.y) as f64,
+                        (z as i32 + pos.z) as f64,
+                    ) as u16;
+                    layer[z + 1][y] = value;
+                }
+            }
+        }
+
+        // z_neighbor
+        for l in 0..2 {
+            let layer = self.z_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_X]);
+            for y in 0..CHUNK_SIZE_Y {
+                for x in 0..CHUNK_SIZE_X {
+                    let z = l as i32 * (CHUNK_SIZE_Z as i32 + 1) - 1;
+                    let value = evaluate(
+                        perlin,
+                        (x as i32 + pos.x) as f64,
+                        (y as i32 + pos.y) as f64,
+                        (z as i32 + pos.z) as f64,
+                    ) as u16;
+                    layer[x][y] = value;
                 }
             }
         }
@@ -394,14 +448,14 @@ impl Chunk {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
                     if self.values[x][y][z] == 1 {
+                        let pos = IVec3::new(x as i32, y as i32, z as i32);
                         for face in faces {
-                            let pos = IVec3::new(x as i32, y as i32, z as i32);
                             let dir = Chunk::face_dir(face);
                             let dir_pos = pos + dir;
                             let dir_value = self.try_index(dir_pos).unwrap_or(1);
 
                             if dir_value == 0 {
-                                let mut ao = [1, 1, 1, 1];
+                                let mut ao = [0, 0, 0, 0];
                                 if AO {
                                     for i in 0..4 {
                                         let offset = corner(face, i);

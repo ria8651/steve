@@ -33,7 +33,7 @@ fn main() {
         .add_asset::<ChunkMaterial>()
         .insert_resource(MovementSettings {
             sensitivity: 0.00012, // default: 0.00012
-            speed: 50.0,          // default: 12.0
+            speed: 8.0,           // default: 12.0
         })
         .add_startup_system(setup.system())
         .add_startup_system(spawn_chunk_tasks.system())
@@ -86,7 +86,7 @@ fn setup(
     // camera
     commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 300.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-2.0, 230.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
             perspective_projection: PerspectiveProjection {
                 fov: 1.48353,
                 near: 0.05,
@@ -98,7 +98,7 @@ fn setup(
         .insert(FlyCam);
     // origin
     commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
         material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
         ..Default::default()
@@ -118,29 +118,6 @@ fn setup(
         },
         ..Default::default()
     });
-
-    // let tmp_mesh = TmpMesh::new();
-    // tmp_mesh.add_face(Face::Top, Vec3::new(0.0, 0.0, 0.0), );
-
-    // let solid = true;
-    // for face in faces {
-    //     if solid == true {
-    //         let offset = Vec3::new(x as f32, y as f32, z as f32);
-            
-    //     }
-    // }
-
-    // commands
-    //     .spawn_bundle(MeshBundle {
-    //         mesh: meshes.add(chunk_task_data.mesh),
-    //         transform: Transform::from_xyz(
-    //             chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
-    //             0.0,
-    //             chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
-    //         ),
-    //         ..Default::default()
-    //     })
-    //     .insert(material_handle.0.clone());
 }
 
 fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPool>) {
@@ -202,18 +179,6 @@ fn handle_chunk_tasks(
     for (entity, mut task) in completed_chunks.iter_mut() {
         if let Some(chunk_task_data) = future::block_on(future::poll_once(&mut *task)) {
             // Add our new PbrBundle of components to our tagged entity
-            // commands
-            //     .entity(entity)
-            //     .insert_bundle(MeshBundle {
-            //         mesh: meshes.add(chunk_task_data.mesh),
-            //         transform: Transform::from_xyz(
-            //             chunk_task_data.chunk_id.x as f32 * CHUNK_SIZE_X as f32,
-            //             0.0,
-            //             chunk_task_data.chunk_id.y as f32 * CHUNK_SIZE_Z as f32,
-            //         ),
-            //         ..Default::default()
-            //     })
-            //     .insert(material_handle.0.clone());
             commands
                 .spawn_bundle(MeshBundle {
                     mesh: meshes.add(chunk_task_data.mesh), // use our cube with vertex colors
@@ -270,6 +235,17 @@ impl Chunk {
         }
     }
 
+    fn try_index(&self, pos: IVec3) -> Option<u16> {
+        if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32
+            || pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32
+            || pos.z < 0 || pos.z >= CHUNK_SIZE_Z as i32
+        {
+            return None;
+        }
+
+        Some(self.values[pos.x as usize][pos.y as usize][pos.z as usize])
+    }
+
     fn generate(&mut self, pos: Vec3) {
         let perlin = Perlin::default();
 
@@ -291,6 +267,82 @@ impl Chunk {
     }
 
     fn generate_mesh(&mut self) -> TmpMesh {
+        fn get_ao(e1: bool, e2: bool, c: bool) -> u8 {
+            if e1 && e2 {
+                return 3;
+            }
+
+            return e1 as u8 + e2 as u8 + c as u8;
+        }
+
+        fn get_aooo(e1: bool, e2: bool, c: bool) -> f32 {
+            match get_ao(e1, e2, c) {
+                0 => 1.0,
+                1 => 0.4,
+                2 => 0.3,
+                3 => 0.2,
+                _ => -5.0,
+            }
+        }
+
+        fn corner(face: Face, i: u8) -> IVec3 {
+            match face {
+                Face::Front => match i {
+                    0 => IVec3::new(-1, -1, 1),
+                    1 => IVec3::new(1, -1, 1),
+                    2 => IVec3::new(1, 1, 1),
+                    3 => IVec3::new(-1, 1, 1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+                Face::Back => match i {
+                    0 => IVec3::new(-1, -1, -1),
+                    1 => IVec3::new(-1, 1, -1),
+                    2 => IVec3::new(1, 1, -1),
+                    3 => IVec3::new(1, -1, -1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+                Face::Right => match i {
+                    0 => IVec3::new(1, -1, -1),
+                    1 => IVec3::new(1, 1, -1),
+                    2 => IVec3::new(1, 1, 1),
+                    3 => IVec3::new(1, -1, 1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+                Face::Left => match i {
+                    0 => IVec3::new(-1, -1, -1),
+                    1 => IVec3::new(-1, -1, 1),
+                    2 => IVec3::new(-1, 1, 1),
+                    3 => IVec3::new(-1, 1, -1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+                Face::Top => match i {
+                    0 => IVec3::new(-1, 1, -1),
+                    1 => IVec3::new(-1, 1, 1),
+                    2 => IVec3::new(1, 1, 1),
+                    3 => IVec3::new(1, 1, -1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+                Face::Bottom => match i {
+                    0 => IVec3::new(-1, -1, -1),
+                    1 => IVec3::new(1, -1, -1),
+                    2 => IVec3::new(1, -1, 1),
+                    3 => IVec3::new(-1, -1, 1),
+                    _ => IVec3::new(0, 0, 0),
+                },
+            }
+        }
+
+        fn mask(face: Face) -> [IVec3; 2] {
+            match face {
+                Face::Front => [IVec3::new(0, 1, 1), IVec3::new(1, 0, 1)],
+                Face::Back => [IVec3::new(0, 1, 1), IVec3::new(1, 0, 1)],
+                Face::Right => [IVec3::new(1, 0, 1), IVec3::new(1, 1, 0)],
+                Face::Left => [IVec3::new(1, 0, 1), IVec3::new(1, 1, 0)],
+                Face::Top => [IVec3::new(0, 1, 1), IVec3::new(1, 1, 0)],
+                Face::Bottom => [IVec3::new(0, 1, 1), IVec3::new(1, 1, 0)],
+            }
+        }
+
         let mut tmp_mesh = TmpMesh::new();
 
         for x in 0..CHUNK_SIZE_X {
@@ -298,25 +350,29 @@ impl Chunk {
                 for z in 0..CHUNK_SIZE_Z {
                     if self.values[x][y][z] == 1 {
                         for face in faces {
+                            let pos = IVec3::new(x as i32, y as i32, z as i32);
                             let dir = Chunk::face_dir(face);
-                            let x_dir = x as i32 + dir.x;
-                            let y_dir = y as i32 + dir.y;
-                            let z_dir = z as i32 + dir.z;
-                            if x_dir < 0
-                                || x_dir >= CHUNK_SIZE_X as i32
-                                || y_dir < 0
-                                || y_dir >= CHUNK_SIZE_Y as i32
-                                || z_dir < 0
-                                || z_dir >= CHUNK_SIZE_Z as i32
-                            {
-                                // let offset = Vec3::new(x as f32, y as f32, z as f32);
-                                // tmp_mesh.add_face(face, offset);
-                            } else {
-                                if self.values[x_dir as usize][y_dir as usize][z_dir as usize] == 0
-                                {
-                                    let offset = Vec3::new(x as f32, y as f32, z as f32);
-                                    tmp_mesh.add_face(face, offset);
+                            let dir_pos = pos + dir;
+                            let dir_value = self.try_index(dir_pos).unwrap_or(1);
+
+                            if dir_value == 0 {
+                                let mut ao = [1.0, 1.0, 1.0, 1.0];
+                                for i in 0..4 {
+                                    let offset = corner(face, i);
+
+                                    let mask = mask(face);
+                                    let e1 = self.try_index(offset * mask[0] + pos).unwrap_or(0) != 0;
+                                    let e2 = self.try_index(offset * mask[1] + pos).unwrap_or(0) != 0;
+                                    let c = self.try_index(offset + pos).unwrap_or(0) != 0;
+    
+                                    ao[i as usize] = get_aooo(e1, e2, c);
                                 }
+                                tmp_mesh.add_face(
+                                    face,
+                                    Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32),
+                                    ao,
+                                    ao[0] + ao[2] < ao[1] + ao[3],
+                                );
                             }
                         }
                     }
@@ -358,12 +414,17 @@ impl TmpMesh {
         }
     }
 
-    fn add_face(&mut self, face: Face, o: Vec3) {
+    fn add_face(&mut self, face: Face, o: Vec3, ao: [f32; 4], flip: bool) {
         self.uvs
             .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
-        self.ao.extend([0.6, 1.0, 1.0, 0.6]);
+        self.ao.extend(ao);
 
         let a = self.vertices.len() as u32;
+        self.indices.extend(match flip {
+            false => [a, a + 1, a + 2, a, a + 2, a + 3],
+            true => [a + 1, a + 3, a, a + 1, a + 2, a + 3],
+        });
+
         match face {
             Face::Front => {
                 self.vertices.extend([
@@ -378,14 +439,13 @@ impl TmpMesh {
                     [0.0, 0.0, 1.0],
                     [0.0, 0.0, 1.0],
                 ]);
-                self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Back => {
                 self.vertices.extend([
                     [0.0 + o.x, 0.0 + o.y, 0.0 + o.z],
-                    [1.0 + o.x, 0.0 + o.y, 0.0 + o.z],
-                    [1.0 + o.x, 1.0 + o.y, 0.0 + o.z],
                     [0.0 + o.x, 1.0 + o.y, 0.0 + o.z],
+                    [1.0 + o.x, 1.0 + o.y, 0.0 + o.z],
+                    [1.0 + o.x, 0.0 + o.y, 0.0 + o.z],
                 ]);
                 self.normals.extend([
                     [0.0, 0.0, -1.0],
@@ -393,14 +453,13 @@ impl TmpMesh {
                     [0.0, 0.0, -1.0],
                     [0.0, 0.0, -1.0],
                 ]);
-                self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
             Face::Right => {
                 self.vertices.extend([
                     [1.0 + o.x, 0.0 + o.y, 0.0 + o.z],
-                    [1.0 + o.x, 0.0 + o.y, 1.0 + o.z],
-                    [1.0 + o.x, 1.0 + o.y, 1.0 + o.z],
                     [1.0 + o.x, 1.0 + o.y, 0.0 + o.z],
+                    [1.0 + o.x, 1.0 + o.y, 1.0 + o.z],
+                    [1.0 + o.x, 0.0 + o.y, 1.0 + o.z],
                 ]);
                 self.normals.extend([
                     [1.0, 0.0, 0.0],
@@ -408,7 +467,6 @@ impl TmpMesh {
                     [1.0, 0.0, 0.0],
                     [1.0, 0.0, 0.0],
                 ]);
-                self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
             Face::Left => {
                 self.vertices.extend([
@@ -423,7 +481,6 @@ impl TmpMesh {
                     [-1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
                 ]);
-                self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Top => {
                 self.vertices.extend([
@@ -438,14 +495,13 @@ impl TmpMesh {
                     [0.0, 1.0, 0.0],
                     [0.0, 1.0, 0.0],
                 ]);
-                self.indices.extend([a, a + 1, a + 2, a, a + 2, a + 3]);
             }
             Face::Bottom => {
                 self.vertices.extend([
                     [0.0 + o.x, 0.0 + o.y, 0.0 + o.z],
-                    [0.0 + o.x, 0.0 + o.y, 1.0 + o.z],
-                    [1.0 + o.x, 0.0 + o.y, 1.0 + o.z],
                     [1.0 + o.x, 0.0 + o.y, 0.0 + o.z],
+                    [1.0 + o.x, 0.0 + o.y, 1.0 + o.z],
+                    [0.0 + o.x, 0.0 + o.y, 1.0 + o.z],
                 ]);
                 self.normals.extend([
                     [0.0, -1.0, 0.0],
@@ -453,7 +509,6 @@ impl TmpMesh {
                     [0.0, -1.0, 0.0],
                     [0.0, -1.0, 0.0],
                 ]);
-                self.indices.extend([a, a + 2, a + 1, a, a + 3, a + 2]);
             }
         }
     }

@@ -1,6 +1,5 @@
 use super::{IVec3, AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
-use noise::{NoiseFn, Perlin};
-use rand::{rngs::ThreadRng, Rng};
+use noise::{NoiseFn, SuperSimplex, Value};
 
 #[derive(Clone, Copy)]
 enum Face {
@@ -62,15 +61,12 @@ impl Chunk {
         Some(self.values[pos.x as usize][pos.y as usize][pos.z as usize])
     }
 
-    pub fn generate(&mut self, pos: IVec3) {
-        let perlin = Perlin::default();
-        let mut rng = rand::thread_rng();
-
-        fn evaluate(perlin: Perlin, rng: &mut ThreadRng, x: f64, y: f64, z: f64) -> u16 {
+    pub fn generate(&mut self, pos: IVec3, simplex: &SuperSimplex, value: &Value) {
+        fn evaluate(simplex: &SuperSimplex, value: &Value, x: f64, y: f64, z: f64) -> u16 {
             let scale = 100.0;
-            let p = perlin.get([x / scale, y / scale, z / scale]);
-            if p + y * 0.02 - 1.0 < 0.0 {
-                rng.gen_range(1..5)
+            let p = simplex.get([x / scale, y / scale, z / scale]);
+            if p + y * 0.04 - 1.0 < 0.0 {
+                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 4.0 + 1.0) as u16
             } else {
                 0
             }
@@ -81,8 +77,8 @@ impl Chunk {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
                     let value = evaluate(
-                        perlin,
-                        &mut rng,
+                        simplex,
+                        value,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
@@ -99,8 +95,8 @@ impl Chunk {
                 for z in 0..CHUNK_SIZE_Z {
                     let x = l as i32 * (CHUNK_SIZE_X as i32 + 1) - 1;
                     let value = evaluate(
-                        perlin,
-                        &mut rng,
+                        simplex,
+                        value,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
@@ -117,8 +113,8 @@ impl Chunk {
                 for x in 0..CHUNK_SIZE_X {
                     let z = l as i32 * (CHUNK_SIZE_Z as i32 + 1) - 1;
                     let value = evaluate(
-                        perlin,
-                        &mut rng,
+                        simplex,
+                        value,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,

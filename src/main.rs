@@ -18,6 +18,8 @@ use bevy::{
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use futures_lite::future;
 
+use noise::{SuperSimplex, Value};
+
 mod chunk;
 use chunk::*;
 
@@ -185,6 +187,9 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
         a_sqr_dist.cmp(&b_sqr_dist)
     });
 
+    let simplex = SuperSimplex::new();
+    let value = Value::new();
+
     for chunk_id in chunks_to_load {
         let task = thread_pool.spawn(async move {
             let mut chunk = Chunk::new();
@@ -192,7 +197,7 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
                 chunk_id.x * CHUNK_SIZE_X as i32,
                 0,
                 chunk_id.y * CHUNK_SIZE_Z as i32,
-            ));
+            ), &simplex, &value);
 
             let tmp_mesh = chunk.generate_mesh();
 

@@ -1,4 +1,4 @@
-use super::{IVec3, Perlin, NoiseFn, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z, AO};
+use super::{IVec3, NoiseFn, Perlin, AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
 
 #[derive(Clone, Copy)]
 enum Face {
@@ -35,6 +35,10 @@ impl Chunk {
     }
 
     fn try_index(&self, pos: IVec3) -> Option<u16> {
+        if pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32 {
+            return None;
+        }
+
         if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32 {
             let layer = (pos.x + 1) as usize / CHUNK_SIZE_X;
             if let Some(slice) = self.x_neighbor[layer] {
@@ -53,19 +57,25 @@ impl Chunk {
             }
         }
 
-        if pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32 {
-            return None;
-        }
-
         Some(self.values[pos.x as usize][pos.y as usize][pos.z as usize])
     }
 
     pub fn generate(&mut self, pos: IVec3) {
         let perlin = Perlin::default();
 
-        fn evaluate(perlin: Perlin, x: f64, y: f64, z: f64) -> bool {
-            let p = perlin.get([x / 20.0, y / 20.0, z / 20.0]);
-            p + y * 0.1 - 20.0 < 0.0
+        fn evaluate(perlin: Perlin, x: f64, y: f64, z: f64) -> u16 {
+            let scale = 100.0;
+            let p = perlin.get([x / scale, y / scale, z / scale]);
+            let q = perlin.get([x / scale, y / scale, z / scale]);
+            if p + y * 0.02 - 1.0 < 0.0 {
+                match q {
+                    q if q > 0.0 => 2,
+                    q if q < 0.0 => 3,
+                    _ => 1,
+                }
+            } else {
+                0
+            }
         }
 
         // values
@@ -77,7 +87,7 @@ impl Chunk {
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
-                    ) as u16;
+                    );
                     self.values[x][y][z] = value;
                 }
             }
@@ -94,7 +104,7 @@ impl Chunk {
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
-                    ) as u16;
+                    );
                     layer[z + 1][y] = value;
                 }
             }
@@ -111,7 +121,7 @@ impl Chunk {
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
-                    ) as u16;
+                    );
                     layer[x][y] = value;
                 }
             }
@@ -130,9 +140,9 @@ impl Chunk {
         fn get_aooo(v: u8) -> f32 {
             match v {
                 0 => 1.0,
-                1 => 0.4,
-                2 => 0.3,
-                3 => 0.0,
+                1 => 0.8,
+                2 => 0.8,
+                3 => 0.4,
                 _ => -5.0,
             }
         }
@@ -200,7 +210,7 @@ impl Chunk {
         for x in 0..CHUNK_SIZE_X {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
-                    if self.values[x][y][z] == 1 {
+                    if self.values[x][y][z] != 0 {
                         let pos = IVec3::new(x as i32, y as i32, z as i32);
                         for face in faces {
                             let dir = Chunk::face_dir(face);
@@ -282,8 +292,6 @@ impl TmpMesh {
         let y = o.y as f32;
         let z = o.z as f32;
 
-        self.uvs
-            .extend([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
         self.ao.extend(ao);
 
         let a = self.vertices.len() as u32;
@@ -306,6 +314,12 @@ impl TmpMesh {
                     [0.0, 0.0, 1.0],
                     [0.0, 0.0, 1.0],
                 ]);
+                self.uvs.extend([
+                    [0.0, 1.0], //
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
+                ]);
             }
             Face::Back => {
                 self.vertices.extend([
@@ -319,6 +333,12 @@ impl TmpMesh {
                     [0.0, 0.0, -1.0],
                     [0.0, 0.0, -1.0],
                     [0.0, 0.0, -1.0],
+                ]);
+                self.uvs.extend([
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
+                    [0.0, 1.0], //
                 ]);
             }
             Face::Right => {
@@ -334,6 +354,12 @@ impl TmpMesh {
                     [1.0, 0.0, 0.0],
                     [1.0, 0.0, 0.0],
                 ]);
+                self.uvs.extend([
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
+                    [0.0, 1.0], //
+                ]);
             }
             Face::Left => {
                 self.vertices.extend([
@@ -347,6 +373,12 @@ impl TmpMesh {
                     [-1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
+                ]);
+                self.uvs.extend([
+                    [0.0, 1.0], //
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
                 ]);
             }
             Face::Top => {
@@ -362,6 +394,12 @@ impl TmpMesh {
                     [0.0, 1.0, 0.0],
                     [0.0, 1.0, 0.0],
                 ]);
+                self.uvs.extend([
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
+                    [0.0, 1.0], //
+                ]);
             }
             Face::Bottom => {
                 self.vertices.extend([
@@ -375,6 +413,12 @@ impl TmpMesh {
                     [0.0, -1.0, 0.0],
                     [0.0, -1.0, 0.0],
                     [0.0, -1.0, 0.0],
+                ]);
+                self.uvs.extend([
+                    [0.0, 1.0], //
+                    [1.0, 1.0], //
+                    [1.0, 0.0], //
+                    [0.0, 0.0], //
                 ]);
             }
         }

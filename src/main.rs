@@ -39,7 +39,7 @@ fn main() {
         .add_asset::<ChunkMaterial>()
         .insert_resource(MovementSettings {
             sensitivity: 0.00012, // default: 0.00012
-            speed: 8.0,           // default: 12.0
+            speed: 50.0,           // default: 12.0
         })
         .add_startup_system(setup.system())
         .add_startup_system(spawn_chunk_tasks.system())
@@ -50,12 +50,17 @@ fn main() {
 
 #[derive(RenderResources, Default, TypeUuid)]
 #[uuid = "0320b9b8-b3a3-4baa-8bfa-c94008177b17"]
-struct ChunkMaterial;
+struct ChunkMaterial {
+    texture_atlas: Handle<Texture>,
+}
 struct ChunkMaterialHandle(Handle<ChunkMaterial>);
 struct ChunkPipelineHandle(Handle<PipelineDescriptor>);
 
-const VERTEX_SHADER: &str = include_str!("chunk.vert");
-const FRAGMENT_SHADER: &str = include_str!("chunk.frag");
+#[derive(RenderResources, Default, TypeUuid)]
+#[uuid = "93fb26fc-6c05-489b-9029-601edf703b6b"]
+struct TextureAtlas {
+    texture: Handle<Texture>,
+}
 
 fn setup(
     mut commands: Commands,
@@ -67,10 +72,19 @@ fn setup(
     mut render_graph: ResMut<RenderGraph>,
     asset_server: Res<AssetServer>,
 ) {
+    // Start loading the texture.
+    let texture_atlas_handle = asset_server.load("textures/terrain.png");
+
     // Create a new shader pipeline
     let pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
-        vertex: shaders.add(Shader::from_glsl(ShaderStage::Vertex, VERTEX_SHADER)),
-        fragment: Some(shaders.add(Shader::from_glsl(ShaderStage::Fragment, FRAGMENT_SHADER))),
+        vertex: shaders.add(Shader::from_glsl(
+            ShaderStage::Vertex,
+            include_str!("chunk.vert"),
+        )),
+        fragment: Some(shaders.add(Shader::from_glsl(
+            ShaderStage::Fragment,
+            include_str!("chunk.frag"),
+        ))),
     }));
     commands.insert_resource(ChunkPipelineHandle(pipeline_handle));
 
@@ -88,13 +102,15 @@ fn setup(
         .unwrap();
 
     // Create a new material
-    let chunk_material_handle = chunk_materials.add(ChunkMaterial {});
+    let chunk_material_handle = chunk_materials.add(ChunkMaterial {
+        texture_atlas: texture_atlas_handle,
+    });
     commands.insert_resource(ChunkMaterialHandle(chunk_material_handle));
 
     // camera
     commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 210.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-2.0, 50.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
             perspective_projection: PerspectiveProjection {
                 fov: 1.48353,
                 near: 0.05,
@@ -199,8 +215,8 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
             let mut mesh = Mesh::new(TriangleList);
             mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
             mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
-            mesh.set_attribute(Mesh::ATTRIBUTE_UV_0, tmp_mesh.uvs);
-            mesh.set_attribute("AO", VertexAttributeValues::from(tmp_mesh.ao));
+            mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
+            mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
             mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
 
             ChunkTaskData {

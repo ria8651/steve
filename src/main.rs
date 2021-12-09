@@ -17,13 +17,12 @@ use bevy::{
 
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use futures_lite::future;
-use noise::{NoiseFn, Perlin};
 
 mod chunk;
 use chunk::*;
 
 const CHUNK_SIZE_X: usize = 32;
-const CHUNK_SIZE_Y: usize = 384;
+const CHUNK_SIZE_Y: usize = 96;
 const CHUNK_SIZE_Z: usize = 32;
 
 const VIEW_DISTANCE: usize = 16;
@@ -125,21 +124,6 @@ fn setup(
         mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
         material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
-        ..Default::default()
-    });
-    // light
-    commands.spawn_bundle(LightBundle {
-        transform: Transform::from_xyz(3.0, 8.0, 5.0),
-        ..Default::default()
-    });
-    // sun
-    commands.spawn_bundle(LightBundle {
-        transform: Transform::from_xyz(5000.0, 10000.0, 2000.0),
-        light: Light {
-            intensity: 1000000000.0,
-            range: 1000000.0,
-            ..Default::default()
-        },
         ..Default::default()
     });
     // ui

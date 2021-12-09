@@ -1,4 +1,6 @@
-use super::{IVec3, NoiseFn, Perlin, AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
+use super::{IVec3, AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
+use noise::{NoiseFn, Perlin};
+use rand::{rngs::ThreadRng, Rng};
 
 #[derive(Clone, Copy)]
 enum Face {
@@ -62,17 +64,13 @@ impl Chunk {
 
     pub fn generate(&mut self, pos: IVec3) {
         let perlin = Perlin::default();
+        let mut rng = rand::thread_rng();
 
-        fn evaluate(perlin: Perlin, x: f64, y: f64, z: f64) -> u16 {
+        fn evaluate(perlin: Perlin, rng: &mut ThreadRng, x: f64, y: f64, z: f64) -> u16 {
             let scale = 100.0;
             let p = perlin.get([x / scale, y / scale, z / scale]);
-            let q = perlin.get([x / scale, y / scale, z / scale]);
             if p + y * 0.02 - 1.0 < 0.0 {
-                match q {
-                    q if q > 0.0 => 2,
-                    q if q < 0.0 => 3,
-                    _ => 1,
-                }
+                rng.gen_range(1..5)
             } else {
                 0
             }
@@ -84,6 +82,7 @@ impl Chunk {
                 for z in 0..CHUNK_SIZE_Z {
                     let value = evaluate(
                         perlin,
+                        &mut rng,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
@@ -101,6 +100,7 @@ impl Chunk {
                     let x = l as i32 * (CHUNK_SIZE_X as i32 + 1) - 1;
                     let value = evaluate(
                         perlin,
+                        &mut rng,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
@@ -118,6 +118,7 @@ impl Chunk {
                     let z = l as i32 * (CHUNK_SIZE_Z as i32 + 1) - 1;
                     let value = evaluate(
                         perlin,
+                        &mut rng,
                         (x as i32 + pos.x) as f64,
                         (y as i32 + pos.y) as f64,
                         (z as i32 + pos.z) as f64,
@@ -140,9 +141,9 @@ impl Chunk {
         fn get_aooo(v: u8) -> f32 {
             match v {
                 0 => 1.0,
-                1 => 0.8,
-                2 => 0.8,
-                3 => 0.4,
+                1 => 0.6,
+                2 => 0.6,
+                3 => 0.2,
                 _ => -5.0,
             }
         }
@@ -245,6 +246,10 @@ impl Chunk {
                                         get_aooo(ao[3]),
                                     ],
                                     flip,
+                                    Chunk::texture(
+                                        face,
+                                        Chunk::block_textures(self.values[x][y][z]),
+                                    ),
                                 );
                             }
                         }
@@ -266,6 +271,44 @@ impl Chunk {
             Face::Bottom => IVec3::new(0, -1, 0),
         }
     }
+
+    fn block_textures(block: u16) -> BlockTexture {
+        match block {
+            1 => BlockTexture::Sides(0, 2, 3),
+            2 => BlockTexture::Single(1),
+            3 => BlockTexture::Single(2),
+            4 => BlockTexture::Single(4),
+            _ => BlockTexture::Single(9 * 16 + 9),
+        }
+    }
+
+    fn texture(face: Face, block: BlockTexture) -> u16 {
+        match block {
+            BlockTexture::Single(i) => i,
+            BlockTexture::Sides(t, b, s) => match face {
+                Face::Front => s,
+                Face::Back => s,
+                Face::Right => s,
+                Face::Left => s,
+                Face::Top => t,
+                Face::Bottom => b,
+            },
+            BlockTexture::Unique(f, b, r, l, t, u) => match face {
+                Face::Front => f,
+                Face::Back => b,
+                Face::Right => r,
+                Face::Left => l,
+                Face::Top => t,
+                Face::Bottom => u,
+            },
+        }
+    }
+}
+
+enum BlockTexture {
+    Single(u16),
+    Sides(u16, u16, u16),                 // top, bottom, sides
+    Unique(u16, u16, u16, u16, u16, u16), // front, back, right, left, top, bottom
 }
 
 pub struct TmpMesh {
@@ -287,7 +330,7 @@ impl TmpMesh {
         }
     }
 
-    fn add_face(&mut self, face: Face, o: IVec3, ao: [f32; 4], flip: bool) {
+    fn add_face(&mut self, face: Face, o: IVec3, ao: [f32; 4], flip: bool, texture_id: u16) {
         let x = o.x as f32;
         let y = o.y as f32;
         let z = o.z as f32;
@@ -299,6 +342,14 @@ impl TmpMesh {
             false => [a, a + 1, a + 2, a, a + 2, a + 3],
             true => [a + 1, a + 3, a, a + 1, a + 2, a + 3],
         });
+
+        let tex_y = (texture_id / 16) as f32;
+        let tex_x = texture_id as f32 - tex_y;
+
+        let tl = [(0.0 + tex_x) / 16.0, (0.0 + tex_y) / 16.0];
+        let tr = [(1.0 + tex_x) / 16.0, (0.0 + tex_y) / 16.0];
+        let bl = [(0.0 + tex_x) / 16.0, (1.0 + tex_y) / 16.0];
+        let br = [(1.0 + tex_x) / 16.0, (1.0 + tex_y) / 16.0];
 
         match face {
             Face::Front => {
@@ -314,12 +365,7 @@ impl TmpMesh {
                     [0.0, 0.0, 1.0],
                     [0.0, 0.0, 1.0],
                 ]);
-                self.uvs.extend([
-                    [0.0, 1.0], //
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                ]);
+                self.uvs.extend([bl, br, tr, tl]);
             }
             Face::Back => {
                 self.vertices.extend([
@@ -334,12 +380,7 @@ impl TmpMesh {
                     [0.0, 0.0, -1.0],
                     [0.0, 0.0, -1.0],
                 ]);
-                self.uvs.extend([
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                    [0.0, 1.0], //
-                ]);
+                self.uvs.extend([br, tr, tl, bl]);
             }
             Face::Right => {
                 self.vertices.extend([
@@ -354,12 +395,7 @@ impl TmpMesh {
                     [1.0, 0.0, 0.0],
                     [1.0, 0.0, 0.0],
                 ]);
-                self.uvs.extend([
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                    [0.0, 1.0], //
-                ]);
+                self.uvs.extend([br, tr, tl, bl]);
             }
             Face::Left => {
                 self.vertices.extend([
@@ -374,12 +410,7 @@ impl TmpMesh {
                     [-1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
                 ]);
-                self.uvs.extend([
-                    [0.0, 1.0], //
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                ]);
+                self.uvs.extend([bl, br, tr, tl]);
             }
             Face::Top => {
                 self.vertices.extend([
@@ -394,12 +425,7 @@ impl TmpMesh {
                     [0.0, 1.0, 0.0],
                     [0.0, 1.0, 0.0],
                 ]);
-                self.uvs.extend([
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                    [0.0, 1.0], //
-                ]);
+                self.uvs.extend([br, tr, tl, bl]);
             }
             Face::Bottom => {
                 self.vertices.extend([
@@ -414,12 +440,7 @@ impl TmpMesh {
                     [0.0, -1.0, 0.0],
                     [0.0, -1.0, 0.0],
                 ]);
-                self.uvs.extend([
-                    [0.0, 1.0], //
-                    [1.0, 1.0], //
-                    [1.0, 0.0], //
-                    [0.0, 0.0], //
-                ]);
+                self.uvs.extend([bl, br, tr, tl]);
             }
         }
     }

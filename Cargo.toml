@@ -9,8 +9,7 @@ description = "A work in progress minecrat clinet"
 [dependencies]
 bevy = { version = "0.5", features = ["dynamic", ] }
 bevy_flycam = "*"
-rand = "0.8.4"
-noise = "0.7.0"
+simdnoise = { git = "https://github.com/jackmott/rust-simd-noise" }
 futures-lite = "1.12.0"
 criterion = "0.3"
 

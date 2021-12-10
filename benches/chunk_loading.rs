@@ -12,27 +12,30 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 }
 
 fn chunk_stuff(a: i32) {
-    let simplex = SuperSimplex::new();
-    let value = Value::new();
-
     let mut chunk = Chunk::new();
-    chunk.generate(IVec3::new(a, 0, 0), &simplex, &value);
+    chunk.generate(IVec3::new(a, 0, 0));
 
-    let tmp_mesh = chunk.generate_mesh();
+    // let tmp_mesh = chunk.generate_mesh();
 
-    let mut mesh = Mesh::new(TriangleList);
-    mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
-    mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
-    mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
-    mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
-    mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
+    // let mut mesh = Mesh::new(TriangleList);
+    // mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
+    // mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
+    // mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
+    // mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
+    // mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
 }
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
+const CHUNK_SIZE_X: usize = 32;
+const CHUNK_SIZE_Y: usize = 96;
+const CHUNK_SIZE_Z: usize = 32;
+
+const AO: bool = true;
+
 use bevy::prelude::IVec3;
-use noise::{NoiseFn, SuperSimplex, Value};
+use simdnoise::NoiseBuilder;
 
 #[derive(Clone, Copy)]
 enum Face {
@@ -52,13 +55,6 @@ static faces: [Face; 6] = [
     Face::Top,
     Face::Bottom,
 ];
-
-const CHUNK_SIZE_X: usize = 32;
-const CHUNK_SIZE_Y: usize = 96;
-const CHUNK_SIZE_Z: usize = 32;
-
-const VIEW_DISTANCE: usize = 64;
-const AO: bool = true;
 
 pub struct Chunk {
     values: Box<[[[u16; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>,
@@ -101,69 +97,66 @@ impl Chunk {
         Some(self.values[pos.x as usize][pos.y as usize][pos.z as usize])
     }
 
-    pub fn generate(&mut self, pos: IVec3, simplex: &SuperSimplex, value: &Value) {
-        fn evaluate(simplex: &SuperSimplex, value: &Value, x: f64, y: f64, z: f64) -> u16 {
-            let scale = 100.0;
-            let p = simplex.get([x / scale, y / scale, z / scale]);
-            if p + y * 0.04 - 1.0 < 0.0 {
-                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 4.0
-                    + 1.0) as u16
+    pub fn generate(&mut self, pos: IVec3) {
+        fn evaluate(noise: &Vec<f32>, x: i32, y: i32, z: i32) -> u16 {
+            let p = noise[x as usize + y as usize * CHUNK_SIZE_X + z as usize * CHUNK_SIZE_X * CHUNK_SIZE_Y];
+            if p + y as f32 * 0.12 - 5.0 < 0.0 {
+                1
             } else {
                 0
             }
         }
+
+        let (noise, _, _) = NoiseBuilder::fbm_3d_offset(pos.x as f32, CHUNK_SIZE_X, 0.0, CHUNK_SIZE_Y, pos.z as f32, CHUNK_SIZE_Z).generate();
 
         // values
         for x in 0..CHUNK_SIZE_X {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
                     let value = evaluate(
-                        simplex,
-                        value,
-                        (x as i32 + pos.x) as f64,
-                        (y as i32 + pos.y) as f64,
-                        (z as i32 + pos.z) as f64,
+                        &noise,
+                        (x as i32), // + pos.x
+                        (y as i32), // + pos.y
+                        (z as i32), // + pos.z
                     );
                     self.values[x][y][z] = value;
                 }
             }
         }
 
-        // x_neighbor
-        for l in 0..2 {
-            let layer = self.x_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_Z + 2]);
-            for y in 0..CHUNK_SIZE_Y {
-                for z in 0..CHUNK_SIZE_Z {
-                    let x = l as i32 * (CHUNK_SIZE_X as i32 + 1) - 1;
-                    let value = evaluate(
-                        simplex,
-                        value,
-                        (x as i32 + pos.x) as f64,
-                        (y as i32 + pos.y) as f64,
-                        (z as i32 + pos.z) as f64,
-                    );
-                    layer[z + 1][y] = value;
-                }
-            }
-        }
+        // // x_neighbor
+        // for l in 0..2 {
+        //     let layer = self.x_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_Z + 2]);
+        //     for y in 0..CHUNK_SIZE_Y {
+        //         for z in 0..CHUNK_SIZE_Z {
+        //             let x = l as i32 * (CHUNK_SIZE_X as i32 + 1) - 1;
+        //             let value = evaluate(
+        //                 &noise,
+        //                 (x as i32 + pos.x),
+        //                 (y as i32 + pos.y),
+        //                 (z as i32 + pos.z),
+        //             );
+        //             layer[z + 1][y] = value;
+        //         }
+        //     }
+        // }
 
-        // z_neighbor
-        for l in 0..2 {
-            let layer = self.z_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_X]);
-            for y in 0..CHUNK_SIZE_Y {
-                for x in 0..CHUNK_SIZE_X {
-                    let z = l as i32 * (CHUNK_SIZE_Z as i32 + 1) - 1;
-                    let value = evaluate(
-                        simplex,
-                        value,
-                        (x as i32 + pos.x) as f64,
-                        (y as i32 + pos.y) as f64,
-                        (z as i32 + pos.z) as f64,
-                    );
-                    layer[x][y] = value;
-                }
-            }
-        }
+        // // z_neighbor
+        // for l in 0..2 {
+        //     let layer = self.z_neighbor[l].insert([[0; CHUNK_SIZE_Y]; CHUNK_SIZE_X]);
+        //     for y in 0..CHUNK_SIZE_Y {
+        //         for x in 0..CHUNK_SIZE_X {
+        //             let z = l as i32 * (CHUNK_SIZE_Z as i32 + 1) - 1;
+        //             let value = evaluate(
+        //                 &noise,
+        //                 (x as i32 + pos.x),
+        //                 (y as i32 + pos.y),
+        //                 (z as i32 + pos.z),
+        //             );
+        //             layer[x][y] = value;
+        //         }
+        //     }
+        // }
     }
 
     pub fn generate_mesh(&mut self) -> TmpMesh {

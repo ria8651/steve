@@ -18,8 +18,6 @@ use bevy::{
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use futures_lite::future;
 
-use noise::{SuperSimplex, Value};
-
 mod chunk;
 use chunk::*;
 
@@ -27,7 +25,7 @@ const CHUNK_SIZE_X: usize = 32;
 const CHUNK_SIZE_Y: usize = 96;
 const CHUNK_SIZE_Z: usize = 32;
 
-const VIEW_DISTANCE: usize = 16;
+const VIEW_DISTANCE: usize = 32;
 const AO: bool = true;
 
 fn main() {
@@ -111,7 +109,7 @@ fn setup(
     // camera
     commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 50.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-2.0, 500.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
             perspective_projection: PerspectiveProjection {
                 fov: 1.48353,
                 near: 0.05,
@@ -187,9 +185,6 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
         a_sqr_dist.cmp(&b_sqr_dist)
     });
 
-    let simplex = SuperSimplex::new();
-    let value = Value::new();
-
     for chunk_id in chunks_to_load {
         let task = thread_pool.spawn(async move {
             let mut chunk = Chunk::new();
@@ -197,7 +192,7 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
                 chunk_id.x * CHUNK_SIZE_X as i32,
                 0,
                 chunk_id.y * CHUNK_SIZE_Z as i32,
-            ), &simplex, &value);
+            ));
 
             let tmp_mesh = chunk.generate_mesh();
 

@@ -1,4 +1,36 @@
-use super::{AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
+use bevy::{
+    prelude::*,
+    render::{
+        mesh::{Indices, VertexAttributeValues},
+        pipeline::PrimitiveTopology::TriangleList,
+    },
+};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+
+pub fn criterion_benchmark(c: &mut Criterion) {
+    c.bench_function("Full Chunk Generation", |b| b.iter(|| chunk_stuff(black_box(0))));
+}
+
+fn chunk_stuff(a: i32) {
+    let simplex = SuperSimplex::new();
+    let value = Value::new();
+
+    let mut chunk = Chunk::new();
+    chunk.generate(IVec3::new(a, 0, 0), &simplex, &value);
+
+    let tmp_mesh = chunk.generate_mesh();
+
+    let mut mesh = Mesh::new(TriangleList);
+    mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
+    mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
+    mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
+    mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
+    mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
+}
+
+criterion_group!(benches, criterion_benchmark);
+criterion_main!(benches);
+
 use bevy::prelude::IVec3;
 use noise::{NoiseFn, SuperSimplex, Value};
 
@@ -20,6 +52,13 @@ static faces: [Face; 6] = [
     Face::Top,
     Face::Bottom,
 ];
+
+const CHUNK_SIZE_X: usize = 32;
+const CHUNK_SIZE_Y: usize = 96;
+const CHUNK_SIZE_Z: usize = 32;
+
+const VIEW_DISTANCE: usize = 64;
+const AO: bool = true;
 
 pub struct Chunk {
     values: Box<[[[u16; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>,
@@ -67,7 +106,8 @@ impl Chunk {
             let scale = 100.0;
             let p = simplex.get([x / scale, y / scale, z / scale]);
             if p + y * 0.04 - 1.0 < 0.0 {
-                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 4.0 + 1.0) as u16
+                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 4.0
+                    + 1.0) as u16
             } else {
                 0
             }

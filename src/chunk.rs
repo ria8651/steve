@@ -1,6 +1,10 @@
-use super::{AO, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z};
 use bevy::prelude::IVec3;
 use noise::{NoiseFn, SuperSimplex, Value};
+
+pub const CHUNK_SIZE_X: usize = 32;
+pub const CHUNK_SIZE_Y: usize = 96;
+pub const CHUNK_SIZE_Z: usize = 32;
+const AO: bool = true;
 
 #[derive(Clone, Copy)]
 enum Face {
@@ -12,13 +16,53 @@ enum Face {
     Bottom,
 }
 
-static faces: [Face; 6] = [
+enum BlockTexture {
+    Single(u16),            // all
+    Sides(u16, u16, u16),   // top, bottom, sides
+    Opisite(u16, u16, u16), // front and bottom, right and left, top and bottom
+}
+
+const FACES: [Face; 6] = [
     Face::Front,
     Face::Back,
     Face::Right,
     Face::Left,
     Face::Top,
     Face::Bottom,
+];
+const AO_LEVELS: [f32; 4] = [1.0, 0.6, 0.6, 0.2];
+const FACE_DIR: [[i32; 3]; 6] = [
+    [0, 0, 1],
+    [0, 0, -1],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+];
+const CORNERS: [[[i32; 3]; 4]; 6] = [
+    [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+    [[-1, -1, -1], [-1, 1, -1], [1, 1, -1], [1, -1, -1]],
+    [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]],
+    [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]],
+    [[-1, 1, -1], [-1, 1, 1], [1, 1, 1], [1, 1, -1]],
+    [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]],
+];
+const BLOCKS: [BlockTexture; 7] = [
+    BlockTexture::Single(153),
+    BlockTexture::Sides(0, 2, 3),
+    BlockTexture::Single(1),
+    BlockTexture::Single(2),
+    BlockTexture::Single(4),
+    BlockTexture::Opisite(2 * 16 + 12, 2 * 16 + 13, 3 * 16 + 14),
+    BlockTexture::Opisite(3 * 16 + 12, 3 * 16 + 11, 2 * 16 + 11),
+];
+const MASK: [[[i32; 3]; 2]; 6] = [
+    [[0, 1, 1], [1, 0, 1]],
+    [[0, 1, 1], [1, 0, 1]],
+    [[1, 0, 1], [1, 1, 0]],
+    [[1, 0, 1], [1, 1, 0]],
+    [[0, 1, 1], [1, 1, 0]],
+    [[0, 1, 1], [1, 1, 0]],
 ];
 
 pub struct Chunk {
@@ -36,6 +80,7 @@ impl Chunk {
         }
     }
 
+    #[inline(always)]
     fn try_index(&self, pos: IVec3) -> Option<u16> {
         if pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32 {
             return None;
@@ -67,7 +112,8 @@ impl Chunk {
             let scale = 100.0;
             let p = simplex.get([x / scale, y / scale, z / scale]);
             if p + y * 0.04 - 1.0 < 0.0 {
-                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 4.0 + 1.0) as u16
+                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 6.0
+                    + 1.0) as u16
             } else {
                 0
             }
@@ -127,91 +173,24 @@ impl Chunk {
     }
 
     pub fn generate_mesh(&mut self) -> TmpMesh {
-        fn get_ao(e1: bool, e2: bool, c: bool) -> u8 {
+        #[inline]
+        fn get_ao(e1: bool, e2: bool, c: bool) -> usize {
             if e1 && e2 {
                 return 3;
             }
 
-            return e1 as u8 + e2 as u8 + c as u8;
+            return e1 as usize + e2 as usize + c as usize;
         }
 
-        fn get_aooo(v: u8) -> f32 {
-            match v {
-                0 => 1.0,
-                1 => 0.6,
-                2 => 0.6,
-                3 => 0.2,
-                _ => -5.0,
-            }
-        }
-
-        fn corner(face: Face, i: u8) -> IVec3 {
-            match face {
-                Face::Front => match i {
-                    0 => IVec3::new(-1, -1, 1),
-                    1 => IVec3::new(1, -1, 1),
-                    2 => IVec3::new(1, 1, 1),
-                    3 => IVec3::new(-1, 1, 1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-                Face::Back => match i {
-                    0 => IVec3::new(-1, -1, -1),
-                    1 => IVec3::new(-1, 1, -1),
-                    2 => IVec3::new(1, 1, -1),
-                    3 => IVec3::new(1, -1, -1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-                Face::Right => match i {
-                    0 => IVec3::new(1, -1, -1),
-                    1 => IVec3::new(1, 1, -1),
-                    2 => IVec3::new(1, 1, 1),
-                    3 => IVec3::new(1, -1, 1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-                Face::Left => match i {
-                    0 => IVec3::new(-1, -1, -1),
-                    1 => IVec3::new(-1, -1, 1),
-                    2 => IVec3::new(-1, 1, 1),
-                    3 => IVec3::new(-1, 1, -1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-                Face::Top => match i {
-                    0 => IVec3::new(-1, 1, -1),
-                    1 => IVec3::new(-1, 1, 1),
-                    2 => IVec3::new(1, 1, 1),
-                    3 => IVec3::new(1, 1, -1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-                Face::Bottom => match i {
-                    0 => IVec3::new(-1, -1, -1),
-                    1 => IVec3::new(1, -1, -1),
-                    2 => IVec3::new(1, -1, 1),
-                    3 => IVec3::new(-1, -1, 1),
-                    _ => IVec3::new(0, 0, 0),
-                },
-            }
-        }
-
-        fn mask(face: Face) -> [IVec3; 2] {
-            match face {
-                Face::Front => [IVec3::new(0, 1, 1), IVec3::new(1, 0, 1)],
-                Face::Back => [IVec3::new(0, 1, 1), IVec3::new(1, 0, 1)],
-                Face::Right => [IVec3::new(1, 0, 1), IVec3::new(1, 1, 0)],
-                Face::Left => [IVec3::new(1, 0, 1), IVec3::new(1, 1, 0)],
-                Face::Top => [IVec3::new(0, 1, 1), IVec3::new(1, 1, 0)],
-                Face::Bottom => [IVec3::new(0, 1, 1), IVec3::new(1, 1, 0)],
-            }
-        }
-
-        let mut tmp_mesh = TmpMesh::new();
+        let mut tmp_mesh = TmpMesh::new(8192);
 
         for x in 0..CHUNK_SIZE_X {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
                     if self.values[x][y][z] != 0 {
                         let pos = IVec3::new(x as i32, y as i32, z as i32);
-                        for face in faces {
-                            let dir = Chunk::face_dir(face);
+                        for face in FACES {
+                            let dir = FACE_DIR[face as usize].into();
                             let dir_pos = pos + dir;
                             let dir_value = self.try_index(dir_pos).unwrap_or(1);
 
@@ -219,14 +198,19 @@ impl Chunk {
                                 let mut ao = [0, 0, 0, 0];
                                 if AO {
                                     for i in 0..4 {
-                                        let offset = corner(face, i);
-                                        let mask = mask(face);
-                                        let e1 =
-                                            self.try_index(offset * mask[0] + pos).unwrap_or(0)
-                                                != 0;
-                                        let e2 =
-                                            self.try_index(offset * mask[1] + pos).unwrap_or(0)
-                                                != 0;
+                                        let offset: IVec3 = CORNERS[face as usize][i].into();
+                                        let e1 = self
+                                            .try_index(
+                                                offset * IVec3::from(MASK[face as usize][0]) + pos,
+                                            )
+                                            .unwrap_or(0)
+                                            != 0;
+                                        let e2 = self
+                                            .try_index(
+                                                offset * IVec3::from(MASK[face as usize][1]) + pos,
+                                            )
+                                            .unwrap_or(0)
+                                            != 0;
                                         let c = self.try_index(offset + pos).unwrap_or(0) != 0;
                                         ao[i as usize] = get_ao(e1, e2, c);
                                     }
@@ -237,16 +221,13 @@ impl Chunk {
                                     face,
                                     IVec3::new(pos.x, pos.y, pos.z),
                                     [
-                                        get_aooo(ao[0]),
-                                        get_aooo(ao[1]),
-                                        get_aooo(ao[2]),
-                                        get_aooo(ao[3]),
+                                        AO_LEVELS[ao[0]],
+                                        AO_LEVELS[ao[1]],
+                                        AO_LEVELS[ao[2]],
+                                        AO_LEVELS[ao[3]],
                                     ],
                                     flip,
-                                    Chunk::texture(
-                                        face,
-                                        Chunk::block_textures(self.values[x][y][z]),
-                                    ),
+                                    Chunk::texture(face, &BLOCKS[self.values[x][y][z] as usize]),
                                 );
                             }
                         }
@@ -258,54 +239,28 @@ impl Chunk {
         tmp_mesh
     }
 
-    fn face_dir(face: Face) -> IVec3 {
-        match face {
-            Face::Front => IVec3::new(0, 0, 1),
-            Face::Back => IVec3::new(0, 0, -1),
-            Face::Right => IVec3::new(1, 0, 0),
-            Face::Left => IVec3::new(-1, 0, 0),
-            Face::Top => IVec3::new(0, 1, 0),
-            Face::Bottom => IVec3::new(0, -1, 0),
-        }
-    }
-
-    fn block_textures(block: u16) -> BlockTexture {
+    #[inline]
+    fn texture(face: Face, block: &BlockTexture) -> u16 {
         match block {
-            1 => BlockTexture::Sides(0, 2, 3),
-            2 => BlockTexture::Single(1),
-            3 => BlockTexture::Single(2),
-            4 => BlockTexture::Single(4),
-            _ => BlockTexture::Single(9 * 16 + 9),
-        }
-    }
-
-    fn texture(face: Face, block: BlockTexture) -> u16 {
-        match block {
-            BlockTexture::Single(i) => i,
+            BlockTexture::Single(i) => *i,
             BlockTexture::Sides(t, b, s) => match face {
-                Face::Front => s,
-                Face::Back => s,
-                Face::Right => s,
-                Face::Left => s,
-                Face::Top => t,
-                Face::Bottom => b,
+                Face::Front => *s,
+                Face::Back => *s,
+                Face::Right => *s,
+                Face::Left => *s,
+                Face::Top => *t,
+                Face::Bottom => *b,
             },
-            BlockTexture::Unique(f, b, r, l, t, u) => match face {
-                Face::Front => f,
-                Face::Back => b,
-                Face::Right => r,
-                Face::Left => l,
-                Face::Top => t,
-                Face::Bottom => u,
+            BlockTexture::Opisite(f, r, t) => match face {
+                Face::Front => *f,
+                Face::Back => *f,
+                Face::Right => *r,
+                Face::Left => *r,
+                Face::Top => *t,
+                Face::Bottom => *t,
             },
         }
     }
-}
-
-enum BlockTexture {
-    Single(u16),
-    Sides(u16, u16, u16),                 // top, bottom, sides
-    Unique(u16, u16, u16, u16, u16, u16), // front, back, right, left, top, bottom
 }
 
 pub struct TmpMesh {
@@ -317,16 +272,17 @@ pub struct TmpMesh {
 }
 
 impl TmpMesh {
-    fn new() -> Self {
+    fn new(capacity: usize) -> Self {
         TmpMesh {
-            vertices: Vec::new(),
-            normals: Vec::new(),
-            uvs: Vec::new(),
-            ao: Vec::new(),
-            indices: Vec::new(),
+            vertices: Vec::with_capacity(capacity),
+            normals: Vec::with_capacity(capacity),
+            uvs: Vec::with_capacity(capacity),
+            ao: Vec::with_capacity(capacity),
+            indices: Vec::with_capacity(capacity * 2),
         }
     }
 
+    #[inline]
     fn add_face(&mut self, face: Face, o: IVec3, ao: [f32; 4], flip: bool, texture_id: u16) {
         let x = o.x as f32;
         let y = o.y as f32;
@@ -341,7 +297,7 @@ impl TmpMesh {
         });
 
         let tex_y = (texture_id / 16) as f32;
-        let tex_x = texture_id as f32 - tex_y;
+        let tex_x = texture_id as f32 - tex_y * 16.0;
 
         let tl = [(0.0 + tex_x) / 16.0, (0.0 + tex_y) / 16.0];
         let tr = [(1.0 + tex_x) / 16.0, (0.0 + tex_y) / 16.0];

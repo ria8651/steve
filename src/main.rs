@@ -1,5 +1,6 @@
 #![allow(non_upper_case_globals)]
 
+// Imports
 use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
@@ -14,22 +15,37 @@ use bevy::{
     },
     tasks::{AsyncComputeTaskPool, Task},
 };
-
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use futures_lite::future;
-
 use noise::{SuperSimplex, Value};
 
 mod chunk;
 use chunk::*;
 
-const CHUNK_SIZE_X: usize = 32;
-const CHUNK_SIZE_Y: usize = 96;
-const CHUNK_SIZE_Z: usize = 32;
+const VIEW_DISTANCE: usize = 32;
 
-const VIEW_DISTANCE: usize = 16;
-const AO: bool = true;
+// Structs
+#[derive(RenderResources, Default, TypeUuid)]
+#[uuid = "0320b9b8-b3a3-4baa-8bfa-c94008177b17"]
+struct ChunkMaterial {
+    texture_atlas: Handle<Texture>,
+}
 
+#[derive(RenderResources, Default, TypeUuid)]
+#[uuid = "93fb26fc-6c05-489b-9029-601edf703b6b"]
+struct TextureAtlas {
+    texture: Handle<Texture>,
+}
+
+struct ChunkMaterialHandle(Handle<ChunkMaterial>);
+struct ChunkPipelineHandle(Handle<PipelineDescriptor>);
+
+struct ChunkTaskData {
+    chunk_id: IVec2,
+    mesh: Mesh,
+}
+
+// Functions
 fn main() {
     App::build()
         .insert_resource(Msaa { samples: 4 })
@@ -38,29 +54,11 @@ fn main() {
         .add_plugin(LogDiagnosticsPlugin::default())
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_asset::<ChunkMaterial>()
-        .insert_resource(MovementSettings {
-            sensitivity: 0.00012, // default: 0.00012
-            speed: 50.0,           // default: 12.0
-        })
         .add_startup_system(setup.system())
         .add_startup_system(spawn_chunk_tasks.system())
         .add_system(fps_system.system())
         .add_system(handle_chunk_tasks.system())
         .run();
-}
-
-#[derive(RenderResources, Default, TypeUuid)]
-#[uuid = "0320b9b8-b3a3-4baa-8bfa-c94008177b17"]
-struct ChunkMaterial {
-    texture_atlas: Handle<Texture>,
-}
-struct ChunkMaterialHandle(Handle<ChunkMaterial>);
-struct ChunkPipelineHandle(Handle<PipelineDescriptor>);
-
-#[derive(RenderResources, Default, TypeUuid)]
-#[uuid = "93fb26fc-6c05-489b-9029-601edf703b6b"]
-struct TextureAtlas {
-    texture: Handle<Texture>,
 }
 
 fn setup(
@@ -73,10 +71,9 @@ fn setup(
     mut render_graph: ResMut<RenderGraph>,
     asset_server: Res<AssetServer>,
 ) {
-    // Start loading the texture.
+    // Custom pipeline
     let texture_atlas_handle = asset_server.load("textures/terrain.png");
 
-    // Create a new shader pipeline
     let pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
         vertex: shaders.add(Shader::from_glsl(
             ShaderStage::Vertex,
@@ -89,26 +86,26 @@ fn setup(
     }));
     commands.insert_resource(ChunkPipelineHandle(pipeline_handle));
 
-    // Add an AssetRenderResourcesNode to our Render Graph. This will bind
-    // MyMaterialWithVertexColorSupport resources to our shader
     render_graph.add_system_node(
         "chunk_material",
         AssetRenderResourcesNode::<ChunkMaterial>::new(true),
     );
 
-    // Add a Render Graph edge connecting our new "my_material" node to the main pass node. This
-    // ensures "my_material" runs before the main pass
     render_graph
         .add_node_edge("chunk_material", base::node::MAIN_PASS)
         .unwrap();
 
-    // Create a new material
     let chunk_material_handle = chunk_materials.add(ChunkMaterial {
         texture_atlas: texture_atlas_handle,
     });
     commands.insert_resource(ChunkMaterialHandle(chunk_material_handle));
 
-    // camera
+    // Camera
+    commands.insert_resource(MovementSettings {
+        sensitivity: 0.00012, // default: 0.00012
+        speed: 50.0,          // default: 12.0
+    });
+
     commands
         .spawn_bundle(PerspectiveCameraBundle {
             transform: Transform::from_xyz(-2.0, 50.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -121,16 +118,19 @@ fn setup(
             ..Default::default()
         })
         .insert(FlyCam);
-    // origin
+
+    // Origin
     commands.spawn_bundle(PbrBundle {
         mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
         material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
         ..Default::default()
     });
-    // ui
+
+    // Ui
     commands.spawn_bundle(UiCameraBundle::default());
-    // fps
+
+    // Fps
     commands.spawn_bundle(TextBundle {
         text: Text {
             sections: vec![TextSection {
@@ -167,7 +167,11 @@ fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
     }
 }
 
-fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPool>) {
+fn spawn_chunk_tasks(
+    mut commands: Commands,
+    thread_pool: Res<AsyncComputeTaskPool>,
+    world: ResMut<World>,
+) {
     let view_distance: i32 = VIEW_DISTANCE as i32;
     let mut chunks_to_load: Vec<IVec2> =
         Vec::with_capacity((view_distance * view_distance) as usize);
@@ -193,11 +197,15 @@ fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPo
     for chunk_id in chunks_to_load {
         let task = thread_pool.spawn(async move {
             let mut chunk = Chunk::new();
-            chunk.generate(IVec3::new(
-                chunk_id.x * CHUNK_SIZE_X as i32,
-                0,
-                chunk_id.y * CHUNK_SIZE_Z as i32,
-            ), &simplex, &value);
+            chunk.generate(
+                IVec3::new(
+                    chunk_id.x * CHUNK_SIZE_X as i32,
+                    0,
+                    chunk_id.y * CHUNK_SIZE_Z as i32,
+                ),
+                &simplex,
+                &value,
+            );
 
             let tmp_mesh = chunk.generate_mesh();
 
@@ -248,9 +256,4 @@ fn handle_chunk_tasks(
             commands.entity(entity).remove::<Task<ChunkTaskData>>();
         }
     }
-}
-
-struct ChunkTaskData {
-    chunk_id: IVec2,
-    mesh: Mesh,
 }

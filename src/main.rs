@@ -170,7 +170,6 @@ fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
 fn spawn_chunk_tasks(
     mut commands: Commands,
     thread_pool: Res<AsyncComputeTaskPool>,
-    world: ResMut<World>,
 ) {
     let view_distance: i32 = VIEW_DISTANCE as i32;
     let mut chunks_to_load: Vec<IVec2> =

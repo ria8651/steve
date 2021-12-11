@@ -16,8 +16,10 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task},
 };
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
+use dashmap::DashMap;
 use futures_lite::future;
 use noise::{SuperSimplex, Value};
+use std::sync::Arc;
 
 mod chunk;
 use chunk::*;
@@ -45,10 +47,15 @@ struct ChunkTaskData {
     mesh: Mesh,
 }
 
+struct World {
+    chunks: Arc<DashMap<IVec2, Chunk>>,
+}
+
 // Functions
 fn main() {
     App::build()
         .insert_resource(Msaa { samples: 4 })
+        .insert_resource(World { chunks: Arc::new(DashMap::new()) })
         .add_plugins(DefaultPlugins)
         .add_plugin(NoCameraPlayerPlugin)
         .add_plugin(LogDiagnosticsPlugin::default())
@@ -167,10 +174,7 @@ fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
     }
 }
 
-fn spawn_chunk_tasks(
-    mut commands: Commands,
-    thread_pool: Res<AsyncComputeTaskPool>,
-) {
+fn spawn_chunk_tasks(mut commands: Commands, thread_pool: Res<AsyncComputeTaskPool>, world: Res<World>) {
     let view_distance: i32 = VIEW_DISTANCE as i32;
     let mut chunks_to_load: Vec<IVec2> =
         Vec::with_capacity((view_distance * view_distance) as usize);
@@ -194,35 +198,42 @@ fn spawn_chunk_tasks(
     let value = Value::new();
 
     for chunk_id in chunks_to_load {
-        let task = thread_pool.spawn(async move {
-            let mut chunk = Chunk::new();
-            chunk.generate(
-                IVec3::new(
-                    chunk_id.x * CHUNK_SIZE_X as i32,
-                    0,
-                    chunk_id.y * CHUNK_SIZE_Z as i32,
-                ),
-                &simplex,
-                &value,
-            );
-
-            let tmp_mesh = chunk.generate_mesh();
-
-            let mut mesh = Mesh::new(TriangleList);
-            mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
-            mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
-            mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
-            mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
-            mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
-
-            ChunkTaskData {
-                chunk_id: chunk_id,
-                mesh: mesh,
-            }
-        });
-
-        // Spawn new entity and add our new task as a component
+        let task = thread_pool.spawn(chunk_task(chunk_id, simplex, value, world.chunks.clone()));
         commands.spawn().insert(task);
+    }
+}
+
+async fn chunk_task(
+    chunk_id: IVec2,
+    simplex: SuperSimplex,
+    value: Value,
+    chunks: Arc<DashMap<IVec2, Chunk>>,
+) -> ChunkTaskData {
+    let mut chunk = Chunk::new();
+    chunk.generate(
+        IVec3::new(
+            chunk_id.x * CHUNK_SIZE_X as i32,
+            0,
+            chunk_id.y * CHUNK_SIZE_Z as i32,
+        ),
+        &simplex,
+        &value,
+    );
+ 
+    let tmp_mesh = chunk.generate_mesh();
+
+    chunks.insert(chunk_id, chunk);
+
+    let mut mesh = Mesh::new(TriangleList);
+    mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
+    mesh.set_attribute(Mesh::ATTRIBUTE_NORMAL, tmp_mesh.normals);
+    mesh.set_attribute("Vertex_UV", tmp_mesh.uvs);
+    mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
+    mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
+
+    ChunkTaskData {
+        chunk_id: chunk_id,
+        mesh: mesh,
     }
 }
 

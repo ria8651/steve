@@ -1,9 +1,9 @@
 use bevy::prelude::IVec3;
 use noise::{NoiseFn, SuperSimplex, Value};
 
-pub const CHUNK_SIZE_X: usize = 64;
+pub const CHUNK_SIZE_X: usize = 32;
 pub const CHUNK_SIZE_Y: usize = 96;
-pub const CHUNK_SIZE_Z: usize = 64;
+pub const CHUNK_SIZE_Z: usize = 32;
 const AO: bool = true;
 
 #[derive(Clone, Copy)]

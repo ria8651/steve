@@ -6,24 +6,36 @@ use bevy::{
     },
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use dashmap::DashMap;
 use noise::{SuperSimplex, Value};
+use std::sync::Arc;
 
 #[path = "../src/chunk.rs"]
 mod chunk;
-use chunk::{Chunk, TmpMesh};
+use chunk::Chunk;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("Full Chunk Generation", |b| b.iter(|| chunk_stuff(black_box(0))));
-}
-
-fn chunk_stuff(a: i32) {
     let simplex = SuperSimplex::new();
     let value = Value::new();
 
+    let chunks = Arc::new(DashMap::new());
+
+    c.bench_function("Full Chunk Generation", |b| {
+        b.iter(|| chunk_task(black_box(0), simplex, value, chunks.clone()))
+    });
+}
+
+fn chunk_task(
+    a: i32,
+    simplex: SuperSimplex,
+    value: Value,
+    chunks: Arc<DashMap<IVec2, Chunk>>,
+) {
     let mut chunk = Chunk::new();
     chunk.generate(IVec3::new(a, 0, 0), &simplex, &value);
-
     let tmp_mesh = chunk.generate_mesh();
+
+    chunks.insert(IVec2::new(a, 0), chunk);
 
     let mut mesh = Mesh::new(TriangleList);
     mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);

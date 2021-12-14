@@ -30,7 +30,7 @@ const FACES: [Face; 6] = [
     Face::Top,
     Face::Bottom,
 ];
-const AO_LEVELS: [f32; 4] = [1.0, 0.6, 0.6, 0.2];
+const AO_LEVELS: [f32; 4] = [1.0, 0.6, 0.6, 0.4];
 const FACE_DIR: [[i32; 3]; 6] = [
     [0, 0, 1],
     [0, 0, -1],
@@ -112,7 +112,7 @@ impl Chunk {
             let scale = 100.0;
             let p = simplex.get([x / scale, y / scale, z / scale]);
             if p + y * 0.04 - 1.0 < 0.0 {
-                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 6.0
+                ((value.get([x * 3429.39467, y * 3429.39467, z * 3429.39467]) / 2.0 + 0.5) * 1.0
                     + 1.0) as u16
             } else {
                 0

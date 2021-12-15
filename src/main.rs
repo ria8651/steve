@@ -23,6 +23,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use std::ops::Deref;
 
 mod chunk;
 use chunk::*;
@@ -45,6 +46,10 @@ struct ChunkMaterial {
 #[uuid = "93fb26fc-6c05-489b-9029-601edf703b6b"]
 struct TextureAtlas {
     texture: Handle<Texture>,
+}
+
+struct ChunkComponent {
+    chunk_id: IVec2,
 }
 
 struct ChunkMaterialHandle(Handle<ChunkMaterial>);
@@ -102,6 +107,7 @@ fn main() {
         .add_startup_system(setup.system())
         .add_startup_system(character_setup.system())
         .add_system(handle_chunk_tasks.system())
+        // .add_system(chunk_unloader.system())
         .add_system(character_system.system())
         .add_system(fps_system.system())
         .run();
@@ -219,23 +225,24 @@ fn character_setup(mut windows: ResMut<Windows>) {
 }
 
 fn character_system(
-    commands: Commands,
-    mut query: Query<(&mut Transform, &mut Character)>,
+    mut commands: Commands,
+    mut character: Query<(&mut Transform, &mut Character)>,
     keys: Res<Input<KeyCode>>,
     mut mouse_motion_events: EventReader<MouseMotion>,
     time: Res<Time>,
     mut windows: ResMut<Windows>,
     thread_pool: Res<AsyncComputeTaskPool>,
-    world: ResMut<Arc<World>>,
-    chunk_priority_map: ResMut<ChunkPriorityMap>,
+    mut world: ResMut<Arc<World>>,
+    mut chunk_priority_map: ResMut<ChunkPriorityMap>,
+    chunk_entitys: Query<(Entity, &ChunkComponent)>,
+    chunk_tasks: Query<(Entity, &ChunkTask)>,
 ) {
     let window = windows.get_primary_mut().unwrap();
     if keys.just_pressed(KeyCode::Escape) {
         toggle_grab_cursor(window);
     }
 
-    let thing = query.iter_mut().next();
-    if let Some((mut transform, mut character)) = thing {
+    if let Ok((mut transform, mut character)) = character.single_mut() {
         let current_chunk = IVec2::new(
             (transform.translation.x / CHUNK_SIZE_X as f32) as i32,
             (transform.translation.z / CHUNK_SIZE_Z as f32) as i32,
@@ -243,6 +250,8 @@ fn character_system(
 
         if character.current_chunk != current_chunk {
             character.current_chunk = current_chunk;
+            unload_chunks(&mut commands, &mut chunk_priority_map, chunk_entitys, chunk_tasks, &mut character, &mut world);
+
             spawn_chunk_tasks(
                 current_chunk,
                 commands,
@@ -398,14 +407,47 @@ fn handle_chunk_tasks(
                         ),
                         ..Default::default()
                     })
-                    .insert(material_handle.0.clone());
+                    .insert(material_handle.0.clone())
+                    .insert(ChunkComponent {
+                        chunk_id: chunk_task.id,
+                    });
             }
             // Task is complete, so remove task component from entity
             commands.entity(entity).remove::<ChunkTask>();
-
         }
     }
-    
-    println!("Number of chunk tasks spawned: {:?}", COUNTER);
-    println!("***************** ran: {:?}", COUNTER2);
+
+    // println!("Number of chunk tasks spawned: {:?}", COUNTER);
+    // println!("***************** ran: {:?}", COUNTER2);
+}
+
+fn unload_chunks(
+    commands: &mut Commands,
+    chunk_priority_map: &mut ResMut<ChunkPriorityMap>,
+    chunk_entities: Query<(Entity, &ChunkComponent)>,
+    chunk_tasks: Query<(Entity, &ChunkTask)>,
+    character: &mut Mut<Character>,
+    world: &mut ResMut<Arc<World>>
+) {
+    if let Some(chunk_priority_map) = &chunk_priority_map.0 {
+        println!("Chunks loaded: {:?}", chunk_entities.iter().count());
+        println!("Chunks in hashmap: {:?}", world.chunks.len());
+
+        for (entity, chunk) in chunk_entities.iter() {
+            if !chunk_priority_map.contains(&(chunk.chunk_id - character.current_chunk)) {
+                commands.entity(entity).despawn();
+                world.chunks.remove(&chunk.chunk_id);
+            }
+        }
+
+        for (entity, chunk_task) in chunk_tasks.iter() {
+            if !chunk_priority_map.contains(&(chunk_task.id - character.current_chunk)) {
+                // let eh = &mut chunk_task.task;
+                // eh.cancel();
+                world.chunks.remove(&chunk_task.id);
+                world.queue.remove(&chunk_task.id);
+                commands.entity(entity).despawn();
+            }
+        }
+    }
 }

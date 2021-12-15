@@ -8,10 +8,10 @@ description = "A work in progress minecrat clinet"
 
 [dependencies]
 bevy = { version = "0.5", features = ["dynamic", ] }
-bevy_flycam = "*"
 simdnoise = { git = "https://github.com/jackmott/rust-simd-noise" }
 futures-lite = "1.12.0"
 criterion = "0.3"
+dashmap = "4.0.2"
 
 [[bench]]
 name = "chunk_loading"

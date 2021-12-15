@@ -30,7 +30,7 @@ const FACES: [Face; 6] = [
     Face::Top,
     Face::Bottom,
 ];
-const AO_LEVELS: [f32; 4] = [1.0, 0.6, 0.6, 0.2];
+const AO_LEVELS: [f32; 4] = [1.0, 0.6, 0.6, 0.4];
 const FACE_DIR: [[i32; 3]; 6] = [
     [0, 0, 1],
     [0, 0, -1],

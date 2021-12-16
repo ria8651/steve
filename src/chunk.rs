@@ -1,5 +1,7 @@
-use bevy::prelude::IVec3;
+use bevy::prelude::{IVec2, IVec3};
 use simdnoise::NoiseBuilder;
+
+use super::World;
 
 pub const CHUNK_SIZE_X: usize = 32;
 pub const CHUNK_SIZE_Y: usize = 96;
@@ -66,39 +68,31 @@ const MASK: [[[i32; 3]; 2]; 6] = [
 ];
 
 pub struct Chunk {
-    values: Box<[[[u16; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>,
-    x_neighbor: Box<[Option<[[u16; CHUNK_SIZE_Y]; CHUNK_SIZE_Z + 2]>; 2]>,
-    z_neighbor: Box<[Option<[[u16; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>; 2]>,
+    chunk_id: IVec2, // :(
+    pub values: Box<[[[u16; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]>,
 }
 
 impl Chunk {
-    pub fn new() -> Self {
+    pub fn new(chunk_id: IVec2) -> Self {
         Chunk {
+            chunk_id: chunk_id,
             values: Box::new([[[0; CHUNK_SIZE_Z]; CHUNK_SIZE_Y]; CHUNK_SIZE_X]),
-            x_neighbor: Box::new([None; 2]),
-            z_neighbor: Box::new([None; 2]),
         }
     }
 
     #[inline(always)]
-    fn try_index(&self, pos: IVec3) -> Option<u16> {
+    fn try_index(&self, world: &World, pos: IVec3) -> Option<u16> {
         if pos.y < 0 || pos.y >= CHUNK_SIZE_Y as i32 {
             return None;
         }
 
-        if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32 {
-            let layer = (pos.x + 1) as usize / CHUNK_SIZE_X;
-            if let Some(slice) = self.x_neighbor[layer] {
-                return Some(slice[(pos.z + 1) as usize][pos.y as usize]);
-            } else {
-                return None;
-            }
-        }
-
-        if pos.z < 0 || pos.z >= CHUNK_SIZE_Z as i32 {
-            let layer = (pos.z + 1) as usize / CHUNK_SIZE_Z;
-            if let Some(slice) = self.z_neighbor[layer] {
-                return Some(slice[pos.x as usize][pos.y as usize]);
+        if pos.x < 0 || pos.x >= CHUNK_SIZE_X as i32 || pos.z < 0 || pos.z >= CHUNK_SIZE_Z as i32 {
+            let x = div_floor(pos.x, CHUNK_SIZE_X as i32);
+            let z = div_floor(pos.z, CHUNK_SIZE_Z as i32);
+            let offset_chunk_id = self.chunk_id + IVec2::new(x, z);
+            if let Some(chunk) = world.chunks.get(&offset_chunk_id) {
+                let pos = pos - IVec3::new(x * CHUNK_SIZE_X as i32, 0, z * CHUNK_SIZE_Z as i32);
+                return Some(chunk.values[pos.x as usize][pos.y as usize][pos.z as usize]);
             } else {
                 return None;
             }
@@ -109,7 +103,8 @@ impl Chunk {
 
     pub fn generate(&mut self, pos: IVec3) {
         fn evaluate(noise: &Vec<f32>, x: i32, y: i32, z: i32) -> u16 {
-            let p = noise[x as usize + y as usize * CHUNK_SIZE_X + z as usize * CHUNK_SIZE_X * CHUNK_SIZE_Y];
+            let p = noise
+                [x as usize + y as usize * CHUNK_SIZE_X + z as usize * CHUNK_SIZE_X * CHUNK_SIZE_Y];
             if p + y as f32 * 0.12 - 5.0 < 0.0 {
                 1
             } else {
@@ -117,17 +112,24 @@ impl Chunk {
             }
         }
 
-        let (noise, _, _) = NoiseBuilder::gradient_3d_offset(pos.x as f32, CHUNK_SIZE_X, 0.0, CHUNK_SIZE_Y, pos.z as f32, CHUNK_SIZE_Z).generate();
+        let (noise, _, _) = NoiseBuilder::gradient_3d_offset(
+            pos.x as f32,
+            CHUNK_SIZE_X,
+            0.0,
+            CHUNK_SIZE_Y,
+            pos.z as f32,
+            CHUNK_SIZE_Z,
+        )
+        .generate();
 
         // values
         for x in 0..CHUNK_SIZE_X {
             for y in 0..CHUNK_SIZE_Y {
                 for z in 0..CHUNK_SIZE_Z {
                     let value = evaluate(
-                        &noise,
-                        (x as i32), // + pos.x
-                        (y as i32), // + pos.y
-                        (z as i32), // + pos.z
+                        &noise, x as i32, // + pos.x
+                        y as i32, // + pos.y
+                        z as i32, // + pos.z
                     );
                     self.values[x][y][z] = value;
                 }
@@ -169,7 +171,7 @@ impl Chunk {
         // }
     }
 
-    pub fn generate_mesh(&mut self) -> TmpMesh {
+    pub fn generate_mesh(&mut self, world: &World) -> TmpMesh {
         #[inline]
         fn get_ao(e1: bool, e2: bool, c: bool) -> usize {
             if e1 && e2 {
@@ -189,7 +191,7 @@ impl Chunk {
                         for face in FACES {
                             let dir = FACE_DIR[face as usize].into();
                             let dir_pos = pos + dir;
-                            let dir_value = self.try_index(dir_pos).unwrap_or(1);
+                            let dir_value = self.try_index(world, dir_pos).unwrap_or(1);
 
                             if dir_value == 0 {
                                 let mut ao = [0, 0, 0, 0];
@@ -198,17 +200,20 @@ impl Chunk {
                                         let offset: IVec3 = CORNERS[face as usize][i].into();
                                         let e1 = self
                                             .try_index(
+                                                world,
                                                 offset * IVec3::from(MASK[face as usize][0]) + pos,
                                             )
                                             .unwrap_or(0)
                                             != 0;
                                         let e2 = self
                                             .try_index(
+                                                world,
                                                 offset * IVec3::from(MASK[face as usize][1]) + pos,
                                             )
                                             .unwrap_or(0)
                                             != 0;
-                                        let c = self.try_index(offset + pos).unwrap_or(0) != 0;
+                                        let c =
+                                            self.try_index(world, offset + pos).unwrap_or(0) != 0;
                                         ao[i as usize] = get_ao(e1, e2, c);
                                     }
                                 }
@@ -393,5 +398,15 @@ impl TmpMesh {
                 self.uvs.extend([bl, br, tr, tl]);
             }
         }
+    }
+}
+
+pub const fn div_floor(lhs: i32, rhs: i32) -> i32 {
+    let d = lhs / rhs;
+    let r = lhs % rhs;
+    if (r > 0 && rhs < 0) || (r < 0 && rhs > 0) {
+        d - 1
+    } else {
+        d
     }
 }

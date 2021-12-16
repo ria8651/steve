@@ -22,13 +22,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use std::ops::Deref;
 
 mod chunk;
 use chunk::*;
 
 const VIEW_DISTANCE: usize = 16;
-const SPEED: f32 = 500.0;
+const SPEED: f32 = 12.0;
 const SENSITIVITY: f32 = 0.002;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -63,7 +62,7 @@ struct ChunkTaskData {
     mesh: Mesh,
 }
 
-struct World {
+pub struct World {
     queue: DashSet<IVec2>,
     chunks: DashMap<IVec2, Chunk>,
 }
@@ -154,7 +153,7 @@ fn setup(
     // camera
     commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(-2.0, 500.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-2.0, 50.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
             perspective_projection: PerspectiveProjection {
                 fov: 1.48353,
                 near: 0.05,
@@ -167,9 +166,12 @@ fn setup(
 
     // origin
     commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
         material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        transform: Transform {
+            scale: Vec3::new(1.0, 10000.0, 1.0),
+            ..Default::default()
+        },
         ..Default::default()
     });
 
@@ -349,7 +351,7 @@ async fn chunk_task(
 ) -> Option<ChunkTaskData> {
     COUNTER2.fetch_add(1, Ordering::Relaxed);
 
-    let mut chunk = Chunk::new();
+    let mut chunk = Chunk::new(chunk_id);
     chunk.generate(
         IVec3::new(
             chunk_id.x * CHUNK_SIZE_X as i32,
@@ -357,7 +359,7 @@ async fn chunk_task(
             chunk_id.y * CHUNK_SIZE_Z as i32,
         ),
     );
-    let tmp_mesh = chunk.generate_mesh();
+    let tmp_mesh = chunk.generate_mesh(&world);
 
     world.chunks.insert(chunk_id, chunk);
     world.queue.remove(&chunk_id);

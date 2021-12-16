@@ -18,18 +18,16 @@ use bevy::{
 };
 use dashmap::{DashMap, DashSet};
 use futures_lite::future;
-use noise::{SuperSimplex, Value};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use std::ops::Deref;
 
 mod chunk;
 use chunk::*;
 
 const VIEW_DISTANCE: usize = 16;
-const SPEED: f32 = 500.0;
+const SPEED: f32 = 12.0;
 const SENSITIVITY: f32 = 0.002;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -64,7 +62,7 @@ struct ChunkTaskData {
     mesh: Mesh,
 }
 
-struct World {
+pub struct World {
     queue: DashSet<IVec2>,
     chunks: DashMap<IVec2, Chunk>,
 }
@@ -168,9 +166,12 @@ fn setup(
 
     // origin
     commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
         material: pbr_materials.add(bevy::prelude::Color::rgb(0.1, 0.1, 0.1).into()),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        transform: Transform {
+            scale: Vec3::new(1.0, 10000.0, 1.0),
+            ..Default::default()
+        },
         ..Default::default()
     });
 
@@ -326,9 +327,6 @@ fn spawn_chunk_tasks(
         chunks_to_load
     });
 
-    let simplex = SuperSimplex::new();
-    let value = Value::new();
-
     for local_offset in chunks_to_load {
         let chunk_id = *local_offset + chunk_offset;
         if !world.chunks.contains_key(&chunk_id) && !world.queue.contains(&chunk_id) {
@@ -337,7 +335,7 @@ fn spawn_chunk_tasks(
             world.queue.insert(chunk_id);
 
             let task: Task<Option<ChunkTaskData>> =
-                thread_pool.spawn(chunk_task(chunk_id, simplex, value, world.clone()));
+                thread_pool.spawn(chunk_task(chunk_id, world.clone()));
 
             commands.spawn().insert(ChunkTask {
                 id: chunk_id,
@@ -349,23 +347,19 @@ fn spawn_chunk_tasks(
 
 async fn chunk_task(
     chunk_id: IVec2,
-    simplex: SuperSimplex,
-    value: Value,
     world: Arc<World>,
 ) -> Option<ChunkTaskData> {
     COUNTER2.fetch_add(1, Ordering::Relaxed);
 
-    let mut chunk = Chunk::new();
+    let mut chunk = Chunk::new(chunk_id);
     chunk.generate(
         IVec3::new(
             chunk_id.x * CHUNK_SIZE_X as i32,
             0,
             chunk_id.y * CHUNK_SIZE_Z as i32,
         ),
-        &simplex,
-        &value,
     );
-    let tmp_mesh = chunk.generate_mesh();
+    let tmp_mesh = chunk.generate_mesh(&world);
 
     world.chunks.insert(chunk_id, chunk);
     world.queue.remove(&chunk_id);

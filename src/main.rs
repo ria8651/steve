@@ -27,11 +27,12 @@ mod chunk;
 use chunk::*;
 
 const VIEW_DISTANCE: usize = 16;
-const SPEED: f32 = 12.0;
+const SPEED: f32 = 500.0;
 const SENSITIVITY: f32 = 0.002;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 static COUNTER2: AtomicUsize = AtomicUsize::new(0);
+static COUNTER3: AtomicUsize = AtomicUsize::new(0);
 
 // Structs
 #[derive(RenderResources, Default, TypeUuid)]
@@ -55,7 +56,7 @@ struct ChunkPipelineHandle(Handle<PipelineDescriptor>);
 
 struct ChunkTask {
     id: IVec2,
-    task: Task<Option<ChunkTaskData>>,
+    task: Task<ChunkTaskData>,
 }
 
 struct ChunkTaskData {
@@ -63,8 +64,11 @@ struct ChunkTaskData {
 }
 
 pub struct World {
-    queue: DashSet<IVec2>,
     chunks: DashMap<IVec2, Chunk>,
+    generating_chunks: DashSet<IVec2>,
+    meshing_chunks: DashSet<IVec2>,
+    neighbor_count: DashMap<IVec2, usize>,
+    meshing_queue: DashSet<IVec2>,
 }
 
 struct ChunkPriorityMap(Option<Vec<IVec2>>);
@@ -85,6 +89,18 @@ impl Default for Character {
     }
 }
 
+const neighbors: [[i32; 2]; 9] = [
+    [0, 0],
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+];
+
 // Functions
 fn main() {
     App::build()
@@ -95,8 +111,11 @@ fn main() {
             ..Default::default()
         })
         .insert_resource(Arc::new(World {
-            queue: DashSet::new(),
             chunks: DashMap::new(),
+            generating_chunks: DashSet::new(),
+            meshing_chunks: DashSet::new(),
+            neighbor_count: DashMap::new(),
+            meshing_queue: DashSet::new(),
         }))
         .insert_resource(ChunkPriorityMap(None))
         .add_plugins(DefaultPlugins)
@@ -105,7 +124,6 @@ fn main() {
         .add_startup_system(setup.system())
         .add_startup_system(character_setup.system())
         .add_system(handle_chunk_tasks.system())
-        // .add_system(chunk_unloader.system())
         .add_system(character_system.system())
         .add_system(fps_system.system())
         .run();
@@ -251,9 +269,16 @@ fn character_system(
 
         if character.current_chunk != current_chunk {
             character.current_chunk = current_chunk;
-            unload_chunks(&mut commands, &mut chunk_priority_map, chunk_entitys, chunk_tasks, &mut character, &mut world);
+            // unload_chunks(
+            //     &mut commands,
+            //     &mut chunk_priority_map,
+            //     chunk_entitys,
+            //     chunk_tasks,
+            //     &mut character,
+            //     &mut world,
+            // );
 
-            spawn_chunk_tasks(
+            update_chunk_state(
                 current_chunk,
                 commands,
                 thread_pool,
@@ -297,14 +322,14 @@ fn character_system(
     }
 }
 
-fn spawn_chunk_tasks(
+fn update_chunk_state(
     chunk_offset: IVec2,
     mut commands: Commands,
     thread_pool: Res<AsyncComputeTaskPool>,
     world: ResMut<Arc<World>>,
     mut chunk_priority_map: ResMut<ChunkPriorityMap>,
 ) {
-    let view_distance: i32 = VIEW_DISTANCE as i32;
+    let view_distance = VIEW_DISTANCE as i32;
 
     let chunks_to_load = chunk_priority_map.0.get_or_insert_with(|| {
         let mut chunks_to_load = Vec::new();
@@ -329,40 +354,56 @@ fn spawn_chunk_tasks(
 
     for local_offset in chunks_to_load {
         let chunk_id = *local_offset + chunk_offset;
-        if !world.chunks.contains_key(&chunk_id) && !world.queue.contains(&chunk_id) {
-            COUNTER.fetch_add(1, Ordering::Relaxed);
+        if !world.chunks.contains_key(&chunk_id) && !world.generating_chunks.contains(&chunk_id) {
+            world.generating_chunks.insert(chunk_id);
 
-            world.queue.insert(chunk_id);
+            thread_pool
+                .spawn(async_chunk_gen(chunk_id, world.clone()))
+                .detach();
 
-            let task: Task<Option<ChunkTaskData>> =
-                thread_pool.spawn(chunk_task(chunk_id, world.clone()));
-
-            commands.spawn().insert(ChunkTask {
-                id: chunk_id,
-                task: task,
-            });
+            // let task = thread_pool.spawn(async_chunk_mesh(chunk_id, world.clone()));
+            // commands.spawn().insert(ChunkTask {
+            //     id: chunk_id,
+            //     task: task,
+            // });
         }
     }
 }
 
-async fn chunk_task(
-    chunk_id: IVec2,
-    world: Arc<World>,
-) -> Option<ChunkTaskData> {
-    COUNTER2.fetch_add(1, Ordering::Relaxed);
+async fn async_chunk_gen(chunk_id: IVec2, world: Arc<World>) {
+    COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let mut chunk = Chunk::new(chunk_id);
-    chunk.generate(
-        IVec3::new(
-            chunk_id.x * CHUNK_SIZE_X as i32,
-            0,
-            chunk_id.y * CHUNK_SIZE_Z as i32,
-        ),
-    );
-    let tmp_mesh = chunk.generate_mesh(&world);
+    chunk.generate(IVec3::new(
+        chunk_id.x * CHUNK_SIZE_X as i32,
+        0,
+        chunk_id.y * CHUNK_SIZE_Z as i32,
+    ));
 
     world.chunks.insert(chunk_id, chunk);
-    world.queue.remove(&chunk_id);
+    world.generating_chunks.remove(&chunk_id);
+
+    for dir in neighbors {
+        if let Some(mut value) = world.neighbor_count.get_mut(&(chunk_id + dir.into())) {
+            *value += 1;
+            if *value >= 9 && !world.meshing_chunks.contains(&(chunk_id + dir.into())) {
+                world.meshing_chunks.insert(chunk_id + dir.into());
+                world.meshing_queue.insert(chunk_id + dir.into());
+            }
+        } else {
+            world.neighbor_count.insert(chunk_id + dir.into(), 1);
+        }
+    }
+}
+
+async fn async_chunk_mesh(chunk_id: IVec2, world: Arc<World>) -> ChunkTaskData {
+    COUNTER2.fetch_add(1, Ordering::Relaxed);
+
+    let chunk = world
+        .chunks
+        .get(&chunk_id)
+        .expect("Tried to mesh a chunk that wasn't generated");
+    let tmp_mesh = chunk.generate_mesh(&world);
 
     let mut mesh = Mesh::new(TriangleList);
     mesh.set_attribute(Mesh::ATTRIBUTE_POSITION, tmp_mesh.vertices);
@@ -371,48 +412,57 @@ async fn chunk_task(
     mesh.set_attribute("Vertex_AO", VertexAttributeValues::from(tmp_mesh.ao));
     mesh.set_indices(Some(Indices::U32(tmp_mesh.indices)));
 
-    Some(ChunkTaskData { mesh: mesh })
+    ChunkTaskData { mesh: mesh }
 }
 
 fn handle_chunk_tasks(
     mut commands: Commands,
     mut completed_chunks: Query<(Entity, &mut ChunkTask)>,
     mut meshes: ResMut<Assets<Mesh>>,
+    thread_pool: Res<AsyncComputeTaskPool>,
     material_handle: Res<ChunkMaterialHandle>,
     pipeline_handle: Res<ChunkPipelineHandle>,
+    world: Res<Arc<World>>,
 ) {
+    for chunk_id in world.meshing_queue.clone().iter() {
+        let task = thread_pool.spawn(async_chunk_mesh(*chunk_id, world.clone()));
+        commands.spawn().insert(ChunkTask {
+            id: *chunk_id,
+            task: task,
+        });
+
+        world.meshing_queue.remove(&chunk_id);
+    }
+
     for (entity, mut chunk_task) in completed_chunks.iter_mut() {
-        if let Some(chunk_task_data_option) =
-            future::block_on(future::poll_once(&mut chunk_task.task))
-        {
-            if let Some(chunk_task_data) = chunk_task_data_option {
-                // Add our new PbrBundle of components to our tagged entity
-                commands
-                    .entity(entity)
-                    .insert_bundle(MeshBundle {
-                        mesh: meshes.add(chunk_task_data.mesh),
-                        render_pipelines: RenderPipelines::from_pipelines(vec![
-                            RenderPipeline::new(pipeline_handle.0.clone()),
-                        ]),
-                        transform: Transform::from_xyz(
-                            chunk_task.id.x as f32 * CHUNK_SIZE_X as f32,
-                            0.0,
-                            chunk_task.id.y as f32 * CHUNK_SIZE_Z as f32,
-                        ),
-                        ..Default::default()
-                    })
-                    .insert(material_handle.0.clone())
-                    .insert(ChunkComponent {
-                        chunk_id: chunk_task.id,
-                    });
-            }
+        if let Some(chunk_task_data) = future::block_on(future::poll_once(&mut chunk_task.task)) {
+            // Add our new PbrBundle of components to our tagged entity
+            commands
+                .entity(entity)
+                .insert_bundle(MeshBundle {
+                    mesh: meshes.add(chunk_task_data.mesh),
+                    render_pipelines: RenderPipelines::from_pipelines(vec![RenderPipeline::new(
+                        pipeline_handle.0.clone(),
+                    )]),
+                    transform: Transform::from_xyz(
+                        chunk_task.id.x as f32 * CHUNK_SIZE_X as f32,
+                        0.0,
+                        chunk_task.id.y as f32 * CHUNK_SIZE_Z as f32,
+                    ),
+                    ..Default::default()
+                })
+                .insert(material_handle.0.clone())
+                .insert(ChunkComponent {
+                    chunk_id: chunk_task.id,
+                });
+
             // Task is complete, so remove task component from entity
             commands.entity(entity).remove::<ChunkTask>();
         }
     }
 
-    // println!("Number of chunk tasks spawned: {:?}", COUNTER);
-    // println!("***************** ran: {:?}", COUNTER2);
+    println!("Generated chunks: {:?}", COUNTER);
+    println!("Meshed chunks: {:?}", COUNTER2);
 }
 
 fn unload_chunks(
@@ -421,7 +471,7 @@ fn unload_chunks(
     chunk_entities: Query<(Entity, &ChunkComponent)>,
     chunk_tasks: Query<(Entity, &ChunkTask)>,
     character: &mut Mut<Character>,
-    world: &mut ResMut<Arc<World>>
+    world: &mut ResMut<Arc<World>>,
 ) {
     if let Some(chunk_priority_map) = &chunk_priority_map.0 {
         println!("Chunks loaded: {:?}", chunk_entities.iter().count());
@@ -430,16 +480,24 @@ fn unload_chunks(
         for (entity, chunk) in chunk_entities.iter() {
             if !chunk_priority_map.contains(&(chunk.chunk_id - character.current_chunk)) {
                 commands.entity(entity).despawn();
-                world.chunks.remove(&chunk.chunk_id);
             }
         }
 
+        // let mut oawiehgoaigeh = Vec::new();
+        // for chunk in world.chunks.iter() {
+        //     if !chunk_priority_map.contains(&(*chunk.key() - character.current_chunk)) {
+        //         oawiehgoaigeh.push(*chunk.key());
+        //     }
+        // }
+
+        // for aweoigh in oawiehgoaigeh {
+        //     world.chunks.remove(&aweoigh);
+        // }
+
         for (entity, chunk_task) in chunk_tasks.iter() {
             if !chunk_priority_map.contains(&(chunk_task.id - character.current_chunk)) {
-                // let eh = &mut chunk_task.task;
-                // eh.cancel();
                 world.chunks.remove(&chunk_task.id);
-                world.queue.remove(&chunk_task.id);
+                world.generating_chunks.remove(&chunk_task.id);
                 commands.entity(entity).despawn();
             }
         }

@@ -171,7 +171,7 @@ impl Chunk {
         // }
     }
 
-    pub fn generate_mesh(&mut self, world: &World) -> TmpMesh {
+    pub fn generate_mesh(&self, world: &World) -> TmpMesh {
         #[inline]
         fn get_ao(e1: bool, e2: bool, c: bool) -> usize {
             if e1 && e2 {

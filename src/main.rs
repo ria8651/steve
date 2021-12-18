@@ -66,7 +66,7 @@ struct ChunkTaskData {
 pub struct World {
     chunks: DashMap<IVec2, Chunk>,
     generating_chunks: DashSet<IVec2>,
-    meshing_chunks: DashSet<IVec2>,
+    meshed_chunks: DashSet<IVec2>,
     neighbor_count: DashMap<IVec2, usize>,
     meshing_queue: DashSet<IVec2>,
 }
@@ -103,6 +103,11 @@ const neighbors: [[i32; 2]; 9] = [
 
 // Functions
 fn main() {
+    let mut task_pool_thread_assignment_policy = DefaultTaskPoolOptions::default();
+    task_pool_thread_assignment_policy.io.max_threads = 1;
+    task_pool_thread_assignment_policy.compute.max_threads = 1;
+    task_pool_thread_assignment_policy.async_compute.percent = 1.0;
+
     App::build()
         // .insert_resource(Msaa { samples: 4 })
         .insert_resource(WindowDescriptor {
@@ -110,10 +115,11 @@ fn main() {
             // vsync: false,
             ..Default::default()
         })
+        .insert_resource(task_pool_thread_assignment_policy)
         .insert_resource(Arc::new(World {
             chunks: DashMap::new(),
             generating_chunks: DashSet::new(),
-            meshing_chunks: DashSet::new(),
+            meshed_chunks: DashSet::new(),
             neighbor_count: DashMap::new(),
             meshing_queue: DashSet::new(),
         }))
@@ -269,14 +275,14 @@ fn character_system(
 
         if character.current_chunk != current_chunk {
             character.current_chunk = current_chunk;
-            // unload_chunks(
-            //     &mut commands,
-            //     &mut chunk_priority_map,
-            //     chunk_entitys,
-            //     chunk_tasks,
-            //     &mut character,
-            //     &mut world,
-            // );
+            unload_chunks(
+                &mut commands,
+                &mut chunk_priority_map,
+                chunk_entitys,
+                chunk_tasks,
+                &mut character,
+                &mut world,
+            );
 
             update_chunk_state(
                 current_chunk,
@@ -360,12 +366,6 @@ fn update_chunk_state(
             thread_pool
                 .spawn(async_chunk_gen(chunk_id, world.clone()))
                 .detach();
-
-            // let task = thread_pool.spawn(async_chunk_mesh(chunk_id, world.clone()));
-            // commands.spawn().insert(ChunkTask {
-            //     id: chunk_id,
-            //     task: task,
-            // });
         }
     }
 }
@@ -386,8 +386,8 @@ async fn async_chunk_gen(chunk_id: IVec2, world: Arc<World>) {
     for dir in neighbors {
         if let Some(mut value) = world.neighbor_count.get_mut(&(chunk_id + dir.into())) {
             *value += 1;
-            if *value >= 9 && !world.meshing_chunks.contains(&(chunk_id + dir.into())) {
-                world.meshing_chunks.insert(chunk_id + dir.into());
+            if *value >= 9 && !world.meshed_chunks.contains(&(chunk_id + dir.into())) {
+                world.meshed_chunks.insert(chunk_id + dir.into());
                 world.meshing_queue.insert(chunk_id + dir.into());
             }
         } else {
@@ -461,8 +461,8 @@ fn handle_chunk_tasks(
         }
     }
 
-    println!("Generated chunks: {:?}", COUNTER);
-    println!("Meshed chunks: {:?}", COUNTER2);
+    // println!("Generated chunks: {:?}", COUNTER);
+    // println!("Meshed chunks: {:?}", COUNTER2);
 }
 
 fn unload_chunks(
@@ -476,11 +476,33 @@ fn unload_chunks(
     if let Some(chunk_priority_map) = &chunk_priority_map.0 {
         println!("Chunks loaded: {:?}", chunk_entities.iter().count());
         println!("Chunks in hashmap: {:?}", world.chunks.len());
+        println!("Chunks in neighbor count list: {:?}", world.neighbor_count.len());
 
-        for (entity, chunk) in chunk_entities.iter() {
-            if !chunk_priority_map.contains(&(chunk.chunk_id - character.current_chunk)) {
-                commands.entity(entity).despawn();
+        let mut chunks_to_destroy = Vec::new();
+        let mut neighbors_to_destroy = Vec::new();
+        for chunk in world.chunks.iter() {
+            let chunk_id = *chunk.key();
+            if !chunk_priority_map.contains(&(chunk_id - character.current_chunk)) {
+                chunks_to_destroy.push(chunk_id);
+
+                for dir in neighbors {
+                    if let Some(mut value) = world.neighbor_count.get_mut(&(chunk_id + dir.into()))
+                    {
+                        *value -= 1;
+                        if *value == 0 {
+                            neighbors_to_destroy.push(chunk_id + dir.into());
+                        }
+                    }
+                }
             }
+        }
+
+        for chunk_id in chunks_to_destroy {
+            world.chunks.remove(&chunk_id);
+        }
+
+        for chunk_id in neighbors_to_destroy {
+            world.neighbor_count.remove(&chunk_id);
         }
 
         // let mut oawiehgoaigeh = Vec::new();
@@ -494,12 +516,21 @@ fn unload_chunks(
         //     world.chunks.remove(&aweoigh);
         // }
 
-        for (entity, chunk_task) in chunk_tasks.iter() {
-            if !chunk_priority_map.contains(&(chunk_task.id - character.current_chunk)) {
-                world.chunks.remove(&chunk_task.id);
-                world.generating_chunks.remove(&chunk_task.id);
-                commands.entity(entity).despawn();
+        for (entity, chunk_entity) in chunk_entities.iter() {
+            if let Some(neighbor_count) = world.neighbor_count.get(&chunk_entity.chunk_id) {
+                if *neighbor_count < 9 {
+                    world.meshed_chunks.remove(&chunk_entity.chunk_id);
+                    commands.entity(entity).despawn();
+                }
             }
         }
+
+        // for (entity, chunk_task) in chunk_tasks.iter() {
+        //     if !chunk_priority_map.contains(&(chunk_task.id - character.current_chunk)) {
+        //         world.chunks.remove(&chunk_task.id);
+        //         world.generating_chunks.remove(&chunk_task.id);
+        //         commands.entity(entity).despawn();
+        //     }
+        // }
     }
 }
